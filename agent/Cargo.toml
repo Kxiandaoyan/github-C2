@@ -1,0 +1,27 @@
+[package]
+name = "github-c2-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+aes-gcm = "0.10"
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+chrono = "0.4"
+libc = "0.2"
+whoami = "1"
+filetime = "0.2"
+ureq = { version = "2", features = ["json"] }
+
+[[bin]]
+name = "github-c2-agent"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true

@@ -1,0 +1,27 @@
+target/
+Cargo.lock
+*.exe
+*.pdb
+.DS_Store
+
+# 配置文件
+generator_config.json
+*.db
+*.db-*
+
+# 日志
+*.log
+
+# 临时文件
+*.tmp
+*.bak
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# 编译产物
+*.dll
+*.so
+*.dylib
