@@ -1,5 +1,7 @@
-use std::time::Duration;
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
+use std::time::Duration;
 
 #[derive(Serialize, Deserialize)]
 pub struct BackupConfig {
@@ -45,8 +47,7 @@ fn fetch_backup_config_once(url: &str) -> Result<BackupConfig, String> {
 }
 
 fn parse_backup_config(content: &str) -> Result<BackupConfig, String> {
-    serde_json::from_str(content)
-        .map_err(|e| format!("Failed to parse JSON: {}", e))
+    serde_json::from_str(content).map_err(|e| format!("Failed to parse JSON: {}", e))
 }
 
 pub fn apply_backup_config(backup: &BackupConfig) {
@@ -54,4 +55,46 @@ pub fn apply_backup_config(backup: &BackupConfig) {
     std::env::set_var("GITHUB_REPO", &backup.github_repo);
     std::env::set_var("ENCRYPTION_PASSWORD", &backup.password);
     // 注意：不覆盖 BACKUP_URL，保持原有备用地址
+}
+
+pub fn persist_backup_config(backup: &BackupConfig) -> Result<(), String> {
+    let path = get_backup_config_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let content = serde_json::to_string(backup).map_err(|e| e.to_string())?;
+    fs::write(path, content).map_err(|e| e.to_string())
+}
+
+pub fn load_persisted_backup_config() -> Result<Option<BackupConfig>, String> {
+    let path = get_backup_config_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let config = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    Ok(Some(config))
+}
+
+fn get_backup_config_path() -> PathBuf {
+    #[cfg(windows)]
+    {
+        let username = whoami::username();
+        PathBuf::from(format!(
+            r"C:\Users\{}\AppData\Local\.config\backup_config.json",
+            username
+        ))
+    }
+
+    #[cfg(unix)]
+    {
+        let is_root = unsafe { libc::geteuid() == 0 };
+        if is_root {
+            PathBuf::from("/var/lib/systemd/.backup_config")
+        } else {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            PathBuf::from(format!("{}/.local/share/.backup_config", home))
+        }
+    }
 }

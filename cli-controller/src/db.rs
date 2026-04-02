@@ -19,10 +19,17 @@ pub fn init_db() -> Result<Connection> {
             agent_id TEXT NOT NULL,
             timestamp TEXT NOT NULL,
             content TEXT NOT NULL,
-            is_command INTEGER NOT NULL
+            is_command INTEGER NOT NULL,
+            command_id TEXT,
+            response_to TEXT,
+            message_type TEXT
         )",
         [],
     )?;
+
+    let _ = conn.execute("ALTER TABLE messages ADD COLUMN command_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE messages ADD COLUMN response_to TEXT", []);
+    let _ = conn.execute("ALTER TABLE messages ADD COLUMN message_type TEXT", []);
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS file_list (
@@ -114,20 +121,49 @@ pub fn save_message(
     agent_id: &str,
     content: &str,
     is_command: bool,
+    command_id: Option<&str>,
+    response_to: Option<&str>,
+    message_type: Option<&str>,
 ) -> Result<()> {
     conn.execute(
-        "INSERT INTO messages (agent_id, timestamp, content, is_command) VALUES (?, datetime('now'), ?, ?)",
-        [agent_id, content, if is_command { "1" } else { "0" }],
+        "INSERT INTO messages (agent_id, timestamp, content, is_command, command_id, response_to, message_type) VALUES (?, datetime('now'), ?, ?, ?, ?, ?)",
+        rusqlite::params![
+            agent_id,
+            content,
+            if is_command { 1 } else { 0 },
+            command_id,
+            response_to,
+            message_type,
+        ],
     )?;
     Ok(())
 }
 
-pub fn get_messages(conn: &Connection, agent_id: &str) -> Result<Vec<(String, String, bool)>> {
+pub fn get_messages(
+    conn: &Connection,
+    agent_id: &str,
+) -> Result<
+    Vec<(
+        String,
+        String,
+        bool,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )>,
+> {
     let mut stmt = conn.prepare(
-        "SELECT timestamp, content, is_command FROM messages WHERE agent_id = ? ORDER BY id",
+        "SELECT timestamp, content, is_command, command_id, response_to, message_type FROM messages WHERE agent_id = ? ORDER BY id",
     )?;
     let rows = stmt.query_map([agent_id], |row| {
-        Ok((row.get(0)?, row.get(1)?, row.get::<_, i32>(2)? == 1))
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get::<_, i32>(2)? == 1,
+            row.get(3)?,
+            row.get(4)?,
+            row.get(5)?,
+        ))
     })?;
 
     let mut result = Vec::new();

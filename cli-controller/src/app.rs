@@ -15,6 +15,19 @@ struct FileUploadPayload {
     data: String,
 }
 
+#[derive(Serialize, Deserialize)]
+struct CommandEnvelope {
+    command_id: String,
+    command: String,
+}
+
+#[derive(Deserialize)]
+struct ResponseEnvelope {
+    response_to: String,
+    message_type: String,
+    content: String,
+}
+
 fn format_size(size: i64) -> String {
     if size < 1024 {
         format!("{} B", size)
@@ -42,6 +55,9 @@ pub struct Message {
     pub timestamp: String,
     pub content: String,
     pub is_command: bool,
+    pub command_id: Option<String>,
+    pub response_to: Option<String>,
+    pub message_type: Option<String>,
 }
 
 #[derive(Clone)]
@@ -79,7 +95,7 @@ pub struct App {
     pub chunk_buffer: std::collections::HashMap<String, Vec<String>>,
     pub chunk_part_map: std::collections::HashMap<String, String>,
     pub last_comment_time: Option<String>,
-    pub pending_commands: std::collections::HashSet<String>,
+    pub pending_commands: std::collections::HashMap<String, String>,
     pub error_message: Option<String>,
     pub use_cmd: bool,
     pub use_interactive: bool,
@@ -165,7 +181,7 @@ impl App {
             chunk_buffer: std::collections::HashMap::new(),
             chunk_part_map: std::collections::HashMap::new(),
             last_comment_time: None,
-            pending_commands: std::collections::HashSet::new(),
+            pending_commands: std::collections::HashMap::new(),
             error_message: None,
             use_cmd: false,
             use_interactive: false,
@@ -391,14 +407,28 @@ impl App {
                 egui::Color32::from_rgb(255, 200, 0),
                 format!("⏳ {} command(s) executing...", self.pending_commands.len()),
             );
+            for pending in self.pending_commands.values() {
+                ui.label(
+                    egui::RichText::new(format!("... {}", pending))
+                        .color(egui::Color32::from_rgb(255, 200, 0))
+                        .family(egui::FontFamily::Monospace),
+                );
+            }
         }
 
         egui::ScrollArea::vertical()
             .max_height(500.0)
             .stick_to_bottom(true)
             .show(ui, |ui| {
-                for msg in &self.messages {
+                let mut last_command_id: Option<String> = None;
+                for msg in self.messages.iter().filter(|msg| {
+                    !matches!(
+                        msg.message_type.as_deref(),
+                        Some("file_list") | Some("file_upload")
+                    )
+                }) {
                     if msg.is_command {
+                        last_command_id = msg.command_id.clone();
                         ui.separator();
                         ui.label(
                             egui::RichText::new(format!("> {}", msg.content))
@@ -406,13 +436,23 @@ impl App {
                                 .size(16.0)
                                 .family(egui::FontFamily::Monospace),
                         );
+                        continue;
+                    }
+
+                    let is_same_group =
+                        msg.response_to.is_some() && msg.response_to == last_command_id;
+                    let color = if is_same_group {
+                        egui::Color32::from_rgb(0, 150, 0)
                     } else {
-                        ui.label(
-                            egui::RichText::new(&msg.content)
-                                .color(egui::Color32::from_rgb(0, 150, 0))
-                                .size(16.0)
-                                .family(egui::FontFamily::Monospace),
-                        );
+                        egui::Color32::from_rgb(0, 110, 180)
+                    };
+                    ui.label(
+                        egui::RichText::new(&msg.content)
+                            .color(color)
+                            .size(16.0)
+                            .family(egui::FontFamily::Monospace),
+                    );
+                    if !is_same_group {
                         ui.separator();
                     }
                 }
@@ -437,6 +477,20 @@ impl App {
 
     fn show_files(&mut self, ui: &mut egui::Ui) {
         ui.heading("File Manager");
+
+        for msg in self.messages.iter().rev().take(10).filter(|m| {
+            matches!(
+                m.message_type.as_deref(),
+                Some("file_list") | Some("file_upload")
+            )
+        }) {
+            ui.label(
+                egui::RichText::new(&msg.content)
+                    .family(egui::FontFamily::Monospace)
+                    .color(egui::Color32::from_rgb(100, 180, 220)),
+            );
+        }
+        ui.separator();
 
         ui.horizontal(|ui| {
             ui.label("Path:");
@@ -710,7 +764,23 @@ impl App {
 
             let repo = agent.unwrap().repo.clone();
             let client = crate::github::GitHubClient::new(self.github_token.clone(), repo);
-            let encrypted = crate::crypto::encrypt(cmd, &self.password);
+            let command_id = format!(
+                "cmd-{}-{}",
+                chrono::Utc::now().timestamp_millis(),
+                rand::random::<u64>()
+            );
+            let payload = match serde_json::to_string(&CommandEnvelope {
+                command_id: command_id.clone(),
+                command: cmd.to_string(),
+            }) {
+                Ok(payload) => payload,
+                Err(e) => {
+                    self.error_message = Some(format!("Failed to encode command: {}", e));
+                    return;
+                }
+            };
+
+            let encrypted = crate::crypto::encrypt(&payload, &self.password);
             if encrypted.is_empty() {
                 self.error_message = Some("Encryption failed".to_string());
                 return;
@@ -725,12 +795,24 @@ impl App {
                 timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
                 content: cmd.to_string(),
                 is_command: true,
+                command_id: Some(command_id.clone()),
+                response_to: None,
+                message_type: Some("command".to_string()),
             });
 
-            self.pending_commands.insert(cmd.to_string());
+            self.pending_commands
+                .insert(command_id.clone(), cmd.to_string());
 
             if let Ok(conn) = self.db.lock() {
-                let _ = crate::db::save_message(&conn, agent_id, cmd, true);
+                let _ = crate::db::save_message(
+                    &conn,
+                    agent_id,
+                    cmd,
+                    true,
+                    Some(&command_id),
+                    None,
+                    Some("command"),
+                );
             }
         }
     }
@@ -740,11 +822,14 @@ impl App {
         if let Some(agent_id) = &self.selected_agent {
             if let Ok(conn) = self.db.lock() {
                 if let Ok(msgs) = crate::db::get_messages(&conn, agent_id) {
-                    for (ts, content, is_cmd) in msgs {
+                    for (ts, content, is_cmd, command_id, response_to, message_type) in msgs {
                         self.messages.push(Message {
                             timestamp: ts,
                             content,
                             is_command: is_cmd,
+                            command_id,
+                            response_to,
+                            message_type,
                         });
                     }
                 }
@@ -927,10 +1012,30 @@ impl App {
                                 &decrypted[..50.min(decrypted.len())]
                             ));
                         }
-                        self.process_response(&decrypted);
+                        let parsed = serde_json::from_str::<ResponseEnvelope>(&decrypted).ok();
+                        if let Some(envelope) = parsed.as_ref() {
+                            self.process_response(
+                                &envelope.content,
+                                Some(&envelope.response_to),
+                                Some(&envelope.message_type),
+                            );
+                        } else {
+                            self.process_response(&decrypted, None, None);
+                        }
 
                         if let Ok(conn) = self.db.lock() {
-                            let _ = crate::db::save_message(&conn, agent_id, &decrypted, false);
+                            let _ = crate::db::save_message(
+                                &conn,
+                                agent_id,
+                                parsed
+                                    .as_ref()
+                                    .map(|e| e.content.as_str())
+                                    .unwrap_or(&decrypted),
+                                false,
+                                None,
+                                parsed.as_ref().map(|e| e.response_to.as_str()),
+                                parsed.as_ref().map(|e| e.message_type.as_str()),
+                            );
                             let _ = crate::db::mark_comment_processed(
                                 &conn,
                                 agent_id,
@@ -947,6 +1052,9 @@ impl App {
                             timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
                             content: format!("[Decrypt Failed] {}", display_body),
                             is_command: false,
+                            command_id: None,
+                            response_to: None,
+                            message_type: Some("decrypt_failed".to_string()),
                         });
 
                         if let Ok(conn) = self.db.lock() {
@@ -966,26 +1074,42 @@ impl App {
         }
     }
 
-    fn process_response(&mut self, response: &str) {
+    fn process_response(
+        &mut self,
+        response: &str,
+        response_to: Option<&str>,
+        message_type: Option<&str>,
+    ) {
         if response.starts_with("[Part ") {
-            self.handle_chunk(response);
+            self.handle_chunk(response, response_to, message_type);
         } else if response.starts_with("[FILES_JSON]") {
-            self.parse_file_list(response);
-            self.pending_commands.clear();
+            self.clear_pending(response_to);
+            self.parse_file_list(response, response_to);
         } else if response.starts_with("[FILE_UPLOAD_JSON]") {
-            self.pending_commands.clear();
-            self.handle_uploaded_file(response);
+            self.clear_pending(response_to);
+            self.handle_uploaded_file(response, response_to);
         } else {
-            self.pending_commands.clear();
+            self.clear_pending(response_to);
             self.messages.push(Message {
                 timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
                 content: response.to_string(),
                 is_command: false,
+                command_id: None,
+                response_to: response_to.map(|s| s.to_string()),
+                message_type: message_type.map(|s| s.to_string()),
             });
         }
     }
 
-    fn handle_chunk(&mut self, chunk: &str) {
+    fn clear_pending(&mut self, response_to: Option<&str>) {
+        if let Some(command_id) = response_to {
+            self.pending_commands.remove(command_id);
+        } else {
+            self.pending_commands.clear();
+        }
+    }
+
+    fn handle_chunk(&mut self, chunk: &str, response_to: Option<&str>, message_type: Option<&str>) {
         if let Some(end) = chunk.find(']') {
             let header = &chunk[6..end];
             let parts: Vec<&str> = header.split('/').collect();
@@ -1008,14 +1132,14 @@ impl App {
                         let full = chunks.join("");
                         self.chunk_buffer.remove(&key);
                         self.chunk_part_map.remove(&response_id);
-                        self.process_response(&full);
+                        self.process_response(&full, response_to, message_type);
                     }
                 }
             }
         }
     }
 
-    fn parse_file_list(&mut self, data: &str) {
+    fn parse_file_list(&mut self, data: &str, response_to: Option<&str>) {
         self.file_list.clear();
 
         let Some(payload) = data.strip_prefix("[FILES_JSON]\n") else {
@@ -1044,10 +1168,19 @@ impl App {
                     size: entry.size,
                 });
             }
+
+            self.messages.push(Message {
+                timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+                content: format!("[File List Updated] {}", self.file_path),
+                is_command: false,
+                command_id: None,
+                response_to: response_to.map(|s| s.to_string()),
+                message_type: Some("file_list".to_string()),
+            });
         }
     }
 
-    fn handle_uploaded_file(&mut self, response: &str) {
+    fn handle_uploaded_file(&mut self, response: &str, response_to: Option<&str>) {
         let Some(payload) = response.strip_prefix("[FILE_UPLOAD_JSON]\n") else {
             return;
         };
@@ -1097,6 +1230,9 @@ impl App {
                 timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
                 content: format!("[Downloaded] {}", save_path.display()),
                 is_command: false,
+                command_id: None,
+                response_to: response_to.map(|s| s.to_string()),
+                message_type: Some("file_upload".to_string()),
             }),
             Err(e) => {
                 self.error_message = Some(format!("Failed to save file: {}", e));
