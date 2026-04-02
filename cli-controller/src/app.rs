@@ -1,3 +1,4 @@
+use base64::engine::general_purpose;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -26,6 +27,15 @@ struct ResponseEnvelope {
     response_to: String,
     message_type: String,
     content: String,
+}
+
+#[derive(Serialize)]
+struct UploadChunkCommand {
+    transfer_id: String,
+    path: String,
+    chunk_index: usize,
+    total_chunks: usize,
+    data: String,
 }
 
 fn format_size(size: i64) -> String {
@@ -578,7 +588,9 @@ impl App {
         });
 
         ui.separator();
-        if ui.button("📤 Upload File").clicked() {}
+        if ui.button("📤 Upload File").clicked() {
+            self.upload_file();
+        }
     }
 
     fn show_scan(&mut self, ui: &mut egui::Ui) {
@@ -792,6 +804,8 @@ impl App {
             return;
         }
 
+        let is_background_upload_chunk = cmd.starts_with("upload_chunk ");
+
         if let Some(agent_id) = &self.selected_agent {
             let agent = self.agents.iter().find(|a| &a.id == agent_id);
             if agent.is_none() {
@@ -828,28 +842,32 @@ impl App {
                 return;
             }
 
-            self.messages.push(Message {
-                timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
-                content: cmd.to_string(),
-                is_command: true,
-                command_id: Some(command_id.clone()),
-                response_to: None,
-                message_type: Some("command".to_string()),
-            });
+            if !is_background_upload_chunk {
+                self.messages.push(Message {
+                    timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+                    content: cmd.to_string(),
+                    is_command: true,
+                    command_id: Some(command_id.clone()),
+                    response_to: None,
+                    message_type: Some("command".to_string()),
+                });
+            }
 
             self.pending_commands
                 .insert(command_id.clone(), cmd.to_string());
 
             if let Ok(conn) = self.db.lock() {
-                let _ = crate::db::save_message(
-                    &conn,
-                    agent_id,
-                    cmd,
-                    true,
-                    Some(&command_id),
-                    None,
-                    Some("command"),
-                );
+                if !is_background_upload_chunk {
+                    let _ = crate::db::save_message(
+                        &conn,
+                        agent_id,
+                        cmd,
+                        true,
+                        Some(&command_id),
+                        None,
+                        Some("command"),
+                    );
+                }
             }
         }
     }
@@ -969,6 +987,91 @@ impl App {
             name
         );
         self.send_command_direct(&format!("upload {}", path));
+    }
+
+    fn upload_file(&mut self) {
+        if self.file_path == "DRIVES" {
+            self.error_message =
+                Some("Please enter a specific drive or directory before uploading".to_string());
+            return;
+        }
+
+        let Some(local_path) = rfd::FileDialog::new().pick_file() else {
+            return;
+        };
+
+        let file_data = match std::fs::read(&local_path) {
+            Ok(data) => data,
+            Err(e) => {
+                self.error_message = Some(format!("Failed to read file: {}", e));
+                return;
+            }
+        };
+
+        let file_name = match local_path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name.to_string(),
+            None => {
+                self.error_message = Some("Invalid file name".to_string());
+                return;
+            }
+        };
+
+        let is_win = is_agent_windows(&self.agents, self.selected_agent.as_ref());
+        let sep = if is_win { "\\" } else { "/" };
+        let remote_path = format!(
+            "{}{}{}",
+            self.file_path,
+            if self.file_path.ends_with(sep) || self.file_path == "DRIVES" {
+                ""
+            } else {
+                sep
+            },
+            file_name
+        );
+
+        const UPLOAD_CHUNK_SIZE: usize = 24 * 1024;
+        let chunks: Vec<String> = file_data
+            .chunks(UPLOAD_CHUNK_SIZE)
+            .map(|chunk| general_purpose::STANDARD.encode(chunk))
+            .collect();
+        let total_chunks = chunks.len();
+        let transfer_id = format!(
+            "upload-{}-{}",
+            chrono::Utc::now().timestamp_millis(),
+            rand::random::<u64>()
+        );
+
+        for (chunk_index, data) in chunks.into_iter().enumerate() {
+            let payload = match serde_json::to_string(&UploadChunkCommand {
+                transfer_id: transfer_id.clone(),
+                path: remote_path.clone(),
+                chunk_index,
+                total_chunks,
+                data,
+            }) {
+                Ok(payload) => payload,
+                Err(e) => {
+                    self.error_message = Some(format!("Failed to encode upload chunk: {}", e));
+                    return;
+                }
+            };
+
+            self.send_command_direct(&format!("upload_chunk {}", payload));
+        }
+
+        self.messages.push(Message {
+            timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+            content: format!(
+                "[Upload Started] {} -> {} ({} chunks)",
+                local_path.display(),
+                remote_path,
+                total_chunks
+            ),
+            is_command: false,
+            command_id: None,
+            response_to: None,
+            message_type: Some("file_upload".to_string()),
+        });
     }
 
     fn delete_file_confirmed(&mut self, name: &str) {
@@ -1125,6 +1228,18 @@ impl App {
         } else if response.starts_with("[FILE_UPLOAD_JSON]") {
             self.clear_pending(response_to);
             self.handle_uploaded_file(response, response_to);
+        } else if response.starts_with("[UPLOAD_PROGRESS]")
+            || response.starts_with("[UPLOAD_COMPLETE]")
+        {
+            self.clear_pending(response_to);
+            self.messages.push(Message {
+                timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+                content: response.to_string(),
+                is_command: false,
+                command_id: None,
+                response_to: response_to.map(|s| s.to_string()),
+                message_type: Some("file_upload".to_string()),
+            });
         } else {
             self.clear_pending(response_to);
             self.messages.push(Message {

