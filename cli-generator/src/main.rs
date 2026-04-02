@@ -107,7 +107,7 @@ fn main() {
     }
 
     println!("\n=== 配置摘要 ===");
-    println!("Token: {}...", &config.token[..config.token.len().min(10)]);
+    println!("Token: [hidden]");
     println!("Repo: {}", config.repo);
     println!("轮询间隔: {}秒", config.poll_interval);
 

@@ -14,7 +14,7 @@ fn main() {
 
     if let Ok(repo) = std::env::var("GITHUB_REPO") {
         println!("cargo:rustc-env=GITHUB_REPO={}", repo);
-        eprintln!("[build.rs] GITHUB_REPO set: {}", repo);
+        eprintln!("[build.rs] GITHUB_REPO set");
     } else {
         eprintln!("[build.rs] WARNING: GITHUB_REPO not set!");
     }

@@ -161,7 +161,10 @@ fn install_crontab() -> String {
         Err(_) => return "Failed to get exe path".to_string(),
     };
 
-    let cron_entry = format!("* * * * * {}", exe.display());
+    let cron_entry = format!(
+        "* * * * * '{}'",
+        exe.to_string_lossy().replace('\'', "'\\''")
+    );
 
     // 获取现有 crontab
     let current = Command::new("crontab")
@@ -220,8 +223,9 @@ fn uninstall_crontab() -> String {
     if new_crontab.is_empty() {
         Command::new("crontab").args(&["-r"]).output().ok();
     } else {
+        let escaped = new_crontab.replace('\'', "'\\''");
         Command::new("sh")
-            .args(&["-c", &format!("echo '{}' | crontab -", new_crontab)])
+            .args(&["-c", &format!("echo '{}' | crontab -", escaped)])
             .output()
             .ok();
     }

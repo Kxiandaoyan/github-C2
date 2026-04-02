@@ -1,4 +1,12 @@
+use serde::Serialize;
 use std::fs;
+
+#[derive(Serialize)]
+struct FileEntry {
+    name: String,
+    is_dir: bool,
+    size: u64,
+}
 
 pub fn list_files(path: &str) -> String {
     // Windows特殊处理：空路径或"DRIVES"返回磁盘列表
@@ -23,7 +31,7 @@ pub fn list_files(path: &str) -> String {
 
     match fs::read_dir(path) {
         Ok(entries) => {
-            let mut result = String::from("[FILES]\n");
+            let mut items = Vec::new();
             for entry in entries.filter_map(|e| e.ok()) {
                 let path = entry.path();
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -33,9 +41,16 @@ pub fn list_files(path: &str) -> String {
                 } else {
                     fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
                 };
-                result.push_str(&format!("{}|{}|{}\n", name, if is_dir { "DIR" } else { "FILE" }, size));
+                items.push(FileEntry {
+                    name: name.to_string(),
+                    is_dir,
+                    size,
+                });
             }
-            result
+            match serde_json::to_string(&items) {
+                Ok(json) => format!("[FILES_JSON]\n{}", json),
+                Err(e) => format!("Error: {}", e),
+            }
         }
         Err(e) => format!("Error: {}", e),
     }
@@ -53,12 +68,19 @@ pub fn write_file(path: &str, data: &[u8]) -> Result<String, String> {
 
 #[cfg(windows)]
 fn list_drives() -> String {
-    let mut result = String::from("[FILES]\n");
+    let mut items = Vec::new();
     for letter in b'A'..=b'Z' {
         let drive = format!("{}:\\", letter as char);
         if std::path::Path::new(&drive).exists() {
-            result.push_str(&format!("{}|DIR|0\n", drive));
+            items.push(FileEntry {
+                name: drive,
+                is_dir: true,
+                size: 0,
+            });
         }
     }
-    result
+    match serde_json::to_string(&items) {
+        Ok(json) => format!("[FILES_JSON]\n{}", json),
+        Err(e) => format!("Error: {}", e),
+    }
 }

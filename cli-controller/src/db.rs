@@ -152,6 +152,14 @@ pub fn save_file_list(
     Ok(())
 }
 
+pub fn clear_file_list(conn: &Connection, agent_id: &str, path: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM file_list WHERE agent_id = ? AND path = ?",
+        [agent_id, path],
+    )?;
+    Ok(())
+}
+
 pub fn get_file_list(
     conn: &Connection,
     agent_id: &str,

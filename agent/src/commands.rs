@@ -25,7 +25,7 @@ pub fn execute_command(cmd: &str) -> String {
     if cmd.starts_with("upload ") {
         let path = cmd.strip_prefix("upload ").unwrap().trim();
         return match crate::filetransfer::upload_file(path) {
-            Ok(base64) => format!("[FILE_UPLOAD]\n{}", base64),
+            Ok(payload) => format!("[FILE_UPLOAD_JSON]\n{}", payload),
             Err(e) => e,
         };
     }
