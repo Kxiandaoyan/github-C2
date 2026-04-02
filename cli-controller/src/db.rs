@@ -81,10 +81,16 @@ pub fn init_db() -> Result<Connection> {
             total INTEGER NOT NULL,
             current INTEGER NOT NULL,
             content TEXT NOT NULL,
+            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (agent_id, response_id, current)
         )",
         [],
     )?;
+
+    let _ = conn.execute(
+        "ALTER TABLE chunk_state ADD COLUMN timestamp TEXT NOT NULL DEFAULT (datetime('now'))",
+        [],
+    );
 
     Ok(conn)
 }
@@ -248,7 +254,7 @@ pub fn save_chunk_part(
     content: &str,
 ) -> Result<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO chunk_state (agent_id, response_id, total, current, content) VALUES (?, ?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO chunk_state (agent_id, response_id, total, current, content, timestamp) VALUES (?, ?, ?, ?, ?, datetime('now'))",
         rusqlite::params![agent_id, response_id, total as i64, current as i64, content],
     )?;
     Ok(())
@@ -281,6 +287,14 @@ pub fn clear_chunk_parts(conn: &Connection, agent_id: &str, response_id: &str) -
     conn.execute(
         "DELETE FROM chunk_state WHERE agent_id = ? AND response_id = ?",
         [agent_id, response_id],
+    )?;
+    Ok(())
+}
+
+pub fn cleanup_stale_chunk_parts(conn: &Connection, max_age_minutes: i64) -> Result<()> {
+    conn.execute(
+        "DELETE FROM chunk_state WHERE timestamp < datetime('now', ?)",
+        [format!("-{} minutes", max_age_minutes)],
     )?;
     Ok(())
 }

@@ -114,6 +114,10 @@ pub struct App {
     pub logs: Vec<String>,
     pub poll_interval: u64,
     pub enable_logging: bool,
+    pub command_sent_at: std::collections::HashMap<String, std::time::Instant>,
+    pub command_last_activity: std::collections::HashMap<String, std::time::Instant>,
+    pub selected_command_id: Option<String>,
+    pub pending_upload: Option<(std::path::PathBuf, String)>,
 }
 
 fn get_agent_os(agents: &[Agent], selected: Option<&String>) -> String {
@@ -158,6 +162,7 @@ impl App {
         let mut poll_interval = 5u64;
 
         if let Ok(conn) = db_arc.lock() {
+            let _ = crate::db::cleanup_stale_chunk_parts(&conn, 60);
             if let Ok(Some(token)) = crate::db::get_config(&conn, "github_token") {
                 github_token = token;
             }
@@ -204,7 +209,30 @@ impl App {
             logs: Vec::new(),
             poll_interval,
             enable_logging: false,
+            command_sent_at: std::collections::HashMap::new(),
+            command_last_activity: std::collections::HashMap::new(),
+            selected_command_id: None,
+            pending_upload: None,
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CommandDisplayStatus {
+    Pending,
+    Streaming,
+    Stalled,
+    Completed,
+    Unknown,
+}
+
+fn command_status_text(status: CommandDisplayStatus) -> &'static str {
+    match status {
+        CommandDisplayStatus::Pending => "等待中",
+        CommandDisplayStatus::Streaming => "有响应",
+        CommandDisplayStatus::Stalled => "长时间无更新",
+        CommandDisplayStatus::Completed => "已完成",
+        CommandDisplayStatus::Unknown => "未知",
     }
 }
 
@@ -257,12 +285,18 @@ impl eframe::App for App {
                     if let Some(file_name) = title.strip_prefix("Delete File: ") {
                         self.delete_file_confirmed(file_name);
                     }
+                } else if title == "Overwrite Upload" {
+                    if let Some((local_path, remote_path)) = self.pending_upload.clone() {
+                        self.start_upload(local_path, remote_path);
+                    }
                 }
             }
             self.confirm_action = None;
+            self.pending_upload = None;
         }
         if cancelled {
             self.confirm_action = None;
+            self.pending_upload = None;
         }
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
@@ -430,6 +464,21 @@ impl App {
             }
         }
 
+        if let Some(selected_command_id) = &self.selected_command_id {
+            ui.separator();
+            ui.label(egui::RichText::new(format!("详情: {}", selected_command_id)).strong());
+            for msg in self.messages.iter().filter(|msg| {
+                msg.command_id.as_deref() == Some(selected_command_id)
+                    || msg.response_to.as_deref() == Some(selected_command_id)
+            }) {
+                ui.label(
+                    egui::RichText::new(&msg.content)
+                        .family(egui::FontFamily::Monospace)
+                        .size(13.0),
+                );
+            }
+        }
+
         egui::ScrollArea::vertical()
             .max_height(500.0)
             .stick_to_bottom(true)
@@ -446,30 +495,32 @@ impl App {
                     if msg.is_command {
                         let command_id = msg.command_id.clone();
                         let status = match command_id.as_deref() {
-                            Some(id) if self.pending_commands.contains_key(id) => "执行中",
-                            Some(id)
-                                if filtered
-                                    .iter()
-                                    .skip(i + 1)
-                                    .any(|m| m.response_to.as_deref() == Some(id)) =>
-                            {
-                                "已完成"
+                            Some(id) => {
+                                command_status_text(self.command_display_status(id, &filtered, i))
                             }
-                            _ => "未知",
+                            None => command_status_text(CommandDisplayStatus::Unknown),
                         };
 
                         ui.separator();
                         ui.horizontal(|ui| {
-                            ui.label(
+                            let response = ui.selectable_label(
+                                self.selected_command_id.as_deref() == command_id.as_deref(),
                                 egui::RichText::new(format!("> {}", msg.content))
                                     .color(egui::Color32::from_rgb(180, 0, 0))
                                     .size(16.0)
                                     .family(egui::FontFamily::Monospace),
                             );
+                            if response.clicked() {
+                                self.selected_command_id = command_id.clone();
+                            }
                             ui.label(
                                 egui::RichText::new(format!("[{}]", status))
                                     .color(match status {
-                                        "执行中" => egui::Color32::from_rgb(255, 200, 0),
+                                        "等待中" => egui::Color32::from_rgb(255, 200, 0),
+                                        "有响应" => egui::Color32::from_rgb(80, 170, 255),
+                                        "长时间无更新" => {
+                                            egui::Color32::from_rgb(255, 140, 0)
+                                        }
                                         "已完成" => egui::Color32::from_rgb(0, 180, 0),
                                         _ => egui::Color32::GRAY,
                                     })
@@ -855,6 +906,10 @@ impl App {
 
             self.pending_commands
                 .insert(command_id.clone(), cmd.to_string());
+            self.command_sent_at
+                .insert(command_id.clone(), std::time::Instant::now());
+            self.command_last_activity
+                .insert(command_id.clone(), std::time::Instant::now());
 
             if let Ok(conn) = self.db.lock() {
                 if !is_background_upload_chunk {
@@ -1000,14 +1055,6 @@ impl App {
             return;
         };
 
-        let file_data = match std::fs::read(&local_path) {
-            Ok(data) => data,
-            Err(e) => {
-                self.error_message = Some(format!("Failed to read file: {}", e));
-                return;
-            }
-        };
-
         let file_name = match local_path.file_name().and_then(|n| n.to_str()) {
             Some(name) => name.to_string(),
             None => {
@@ -1028,6 +1075,34 @@ impl App {
             },
             file_name
         );
+
+        if self
+            .file_list
+            .iter()
+            .any(|item| !item.is_dir && item.name == file_name)
+        {
+            self.pending_upload = Some((local_path, remote_path.clone()));
+            self.confirm_action = Some((
+                "Overwrite Upload".to_string(),
+                format!(
+                    "Remote file '{}' already exists. Upload and overwrite it?",
+                    remote_path
+                ),
+            ));
+            return;
+        }
+
+        self.start_upload(local_path, remote_path);
+    }
+
+    fn start_upload(&mut self, local_path: std::path::PathBuf, remote_path: String) {
+        let file_data = match std::fs::read(&local_path) {
+            Ok(data) => data,
+            Err(e) => {
+                self.error_message = Some(format!("Failed to read file: {}", e));
+                return;
+            }
+        };
 
         const UPLOAD_CHUNK_SIZE: usize = 24 * 1024;
         let chunks: Vec<String> = file_data
@@ -1154,6 +1229,8 @@ impl App {
                         }
                         let parsed = serde_json::from_str::<ResponseEnvelope>(&decrypted).ok();
                         if let Some(envelope) = parsed.as_ref() {
+                            self.command_last_activity
+                                .insert(envelope.response_to.clone(), std::time::Instant::now());
                             self.process_response(
                                 &envelope.content,
                                 Some(&envelope.response_to),
@@ -1256,8 +1333,54 @@ impl App {
     fn clear_pending(&mut self, response_to: Option<&str>) {
         if let Some(command_id) = response_to {
             self.pending_commands.remove(command_id);
+            self.command_last_activity
+                .insert(command_id.to_string(), std::time::Instant::now());
         } else {
             self.pending_commands.clear();
+        }
+    }
+
+    fn command_display_status(
+        &self,
+        command_id: &str,
+        filtered: &[&Message],
+        index: usize,
+    ) -> CommandDisplayStatus {
+        if self.pending_commands.contains_key(command_id) {
+            let sent_at = self.command_sent_at.get(command_id);
+            let last_activity = self.command_last_activity.get(command_id);
+            let now = std::time::Instant::now();
+            let has_response = filtered
+                .iter()
+                .skip(index + 1)
+                .any(|m| m.response_to.as_deref() == Some(command_id));
+
+            if has_response {
+                if let Some(last_activity) = last_activity {
+                    if now.duration_since(*last_activity).as_secs() > 120 {
+                        return CommandDisplayStatus::Stalled;
+                    }
+                }
+                return CommandDisplayStatus::Streaming;
+            }
+
+            if let Some(sent_at) = sent_at {
+                if now.duration_since(*sent_at).as_secs() > 180 {
+                    return CommandDisplayStatus::Stalled;
+                }
+            }
+
+            return CommandDisplayStatus::Pending;
+        }
+
+        if filtered
+            .iter()
+            .skip(index + 1)
+            .any(|m| m.response_to.as_deref() == Some(command_id))
+        {
+            CommandDisplayStatus::Completed
+        } else {
+            CommandDisplayStatus::Unknown
         }
     }
 
