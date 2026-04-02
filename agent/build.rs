@@ -1,5 +1,3 @@
-use std::io::Write;
-
 fn main() {
     // 强制重新编译
     println!("cargo:rerun-if-env-changed=GITHUB_TOKEN");
@@ -9,7 +7,7 @@ fn main() {
     // 读取环境变量并注入
     if let Ok(token) = std::env::var("GITHUB_TOKEN") {
         println!("cargo:rustc-env=GITHUB_TOKEN={}", token);
-        eprintln!("[build.rs] GITHUB_TOKEN set: {}...", &token[..token.len().min(10)]);
+        eprintln!("[build.rs] GITHUB_TOKEN set");
     } else {
         eprintln!("[build.rs] WARNING: GITHUB_TOKEN not set!");
     }

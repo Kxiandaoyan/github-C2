@@ -1,7 +1,17 @@
 use rusqlite::{Connection, Result};
+use std::path::PathBuf;
+
+fn get_db_path() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            return dir.join("c2_gui.db");
+        }
+    }
+    PathBuf::from("c2_gui.db")
+}
 
 pub fn init_db() -> Result<Connection> {
-    let conn = Connection::open("c2_gui.db")?;
+    let conn = Connection::open(get_db_path())?;
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS messages (
@@ -61,7 +71,8 @@ pub fn init_db() -> Result<Connection> {
 }
 
 pub fn get_cached_files(conn: &Connection, agent_id: &str, path: &str) -> Result<Option<String>> {
-    let mut stmt = conn.prepare("SELECT content FROM file_cache WHERE agent_id = ? AND path = ?")?;
+    let mut stmt =
+        conn.prepare("SELECT content FROM file_cache WHERE agent_id = ? AND path = ?")?;
     let mut rows = stmt.query([agent_id, path])?;
 
     if let Some(row) = rows.next()? {
@@ -98,7 +109,12 @@ pub fn get_config(conn: &Connection, key: &str) -> Result<Option<String>> {
     }
 }
 
-pub fn save_message(conn: &Connection, agent_id: &str, content: &str, is_command: bool) -> Result<()> {
+pub fn save_message(
+    conn: &Connection,
+    agent_id: &str,
+    content: &str,
+    is_command: bool,
+) -> Result<()> {
     conn.execute(
         "INSERT INTO messages (agent_id, timestamp, content, is_command) VALUES (?, datetime('now'), ?, ?)",
         [agent_id, content, if is_command { "1" } else { "0" }],
@@ -107,7 +123,9 @@ pub fn save_message(conn: &Connection, agent_id: &str, content: &str, is_command
 }
 
 pub fn get_messages(conn: &Connection, agent_id: &str) -> Result<Vec<(String, String, bool)>> {
-    let mut stmt = conn.prepare("SELECT timestamp, content, is_command FROM messages WHERE agent_id = ? ORDER BY id")?;
+    let mut stmt = conn.prepare(
+        "SELECT timestamp, content, is_command FROM messages WHERE agent_id = ? ORDER BY id",
+    )?;
     let rows = stmt.query_map([agent_id], |row| {
         Ok((row.get(0)?, row.get(1)?, row.get::<_, i32>(2)? == 1))
     })?;
@@ -119,7 +137,14 @@ pub fn get_messages(conn: &Connection, agent_id: &str) -> Result<Vec<(String, St
     Ok(result)
 }
 
-pub fn save_file_list(conn: &Connection, agent_id: &str, path: &str, name: &str, is_dir: bool, size: i64) -> Result<()> {
+pub fn save_file_list(
+    conn: &Connection,
+    agent_id: &str,
+    path: &str,
+    name: &str,
+    is_dir: bool,
+    size: i64,
+) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO file_list (agent_id, path, name, is_dir, size, timestamp) VALUES (?, ?, ?, ?, ?, datetime('now'))",
         rusqlite::params![agent_id, path, name, if is_dir { 1 } else { 0 }, size],
@@ -127,7 +152,11 @@ pub fn save_file_list(conn: &Connection, agent_id: &str, path: &str, name: &str,
     Ok(())
 }
 
-pub fn get_file_list(conn: &Connection, agent_id: &str, path: &str) -> Result<Vec<(String, bool, i64)>> {
+pub fn get_file_list(
+    conn: &Connection,
+    agent_id: &str,
+    path: &str,
+) -> Result<Vec<(String, bool, i64)>> {
     let mut stmt = conn.prepare("SELECT name, is_dir, size FROM file_list WHERE agent_id = ? AND path = ? ORDER BY is_dir DESC, name")?;
     let rows = stmt.query_map([agent_id, path], |row| {
         Ok((row.get(0)?, row.get::<_, i32>(1)? == 1, row.get(2)?))
@@ -141,7 +170,8 @@ pub fn get_file_list(conn: &Connection, agent_id: &str, path: &str) -> Result<Ve
 }
 
 pub fn is_comment_processed(conn: &Connection, agent_id: &str, comment_id: i64) -> Result<bool> {
-    let mut stmt = conn.prepare("SELECT 1 FROM processed_comments WHERE agent_id = ? AND comment_id = ?")?;
+    let mut stmt =
+        conn.prepare("SELECT 1 FROM processed_comments WHERE agent_id = ? AND comment_id = ?")?;
     Ok(stmt.exists([agent_id, &comment_id.to_string()])?)
 }
 

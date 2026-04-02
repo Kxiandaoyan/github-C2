@@ -68,10 +68,23 @@ pub struct App {
     pub error_message: Option<String>,
     pub use_cmd: bool,
     pub use_interactive: bool,
+    pub agent_cmd_prefs: std::collections::HashMap<String, bool>,
+    pub chunk_counter: usize,
     pub confirm_action: Option<(String, String)>,
     pub logs: Vec<String>,
     pub poll_interval: u64,
     pub enable_logging: bool,
+}
+
+fn get_agent_os(agents: &[Agent], selected: Option<&String>) -> String {
+    selected
+        .and_then(|id| agents.iter().find(|a| &a.id == id))
+        .map(|a| a.os.to_lowercase())
+        .unwrap_or_default()
+}
+
+fn is_agent_windows(agents: &[Agent], selected: Option<&String>) -> bool {
+    get_agent_os(agents, selected).contains("windows")
 }
 
 impl App {
@@ -89,7 +102,11 @@ impl App {
                 github_token = token;
             }
             if let Ok(Some(repos)) = crate::db::get_config(&conn, "github_repos") {
-                github_repos = repos.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                github_repos = repos
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
             }
             if let Ok(Some(pwd)) = crate::db::get_config(&conn, "password") {
                 password = pwd;
@@ -109,7 +126,11 @@ impl App {
             current_tab: Tab::Settings,
             messages: Vec::new(),
             command_input: String::new(),
-            file_path: if cfg!(windows) { "DRIVES".to_string() } else { "/".to_string() },
+            file_path: if cfg!(windows) {
+                "DRIVES".to_string()
+            } else {
+                "/".to_string()
+            },
             file_list: Vec::new(),
             scan_host: String::new(),
             scan_ports: String::new(),
@@ -121,6 +142,8 @@ impl App {
             error_message: None,
             use_cmd: false,
             use_interactive: false,
+            agent_cmd_prefs: std::collections::HashMap::new(),
+            chunk_counter: 0,
             confirm_action: None,
             logs: Vec::new(),
             poll_interval,
@@ -131,14 +154,12 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Auto poll with configurable interval
         if self.last_poll.elapsed().as_secs() >= self.poll_interval {
             self.poll_responses();
             self.last_poll = std::time::Instant::now();
             ctx.request_repaint();
         }
 
-        // Show error toast
         if let Some(err) = &self.error_message.clone() {
             egui::Window::new("Error")
                 .collapsible(false)
@@ -152,7 +173,6 @@ impl eframe::App for App {
                 });
         }
 
-        // Show confirm dialog
         let mut confirmed = false;
         let mut cancelled = false;
         if let Some((title, message)) = &self.confirm_action.clone() {
@@ -205,76 +225,97 @@ impl eframe::App for App {
         });
 
         let mut new_selection = None;
-        egui::SidePanel::left("agents_panel").min_width(250.0).show(ctx, |ui| {
-            ui.heading("Agents");
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                // 按仓库分组
-                use std::collections::BTreeMap;
-                let mut grouped: BTreeMap<String, Vec<&Agent>> = BTreeMap::new();
-                for agent in &self.agents {
-                    grouped.entry(agent.repo.clone()).or_insert_with(Vec::new).push(agent);
-                }
+        egui::SidePanel::left("agents_panel")
+            .min_width(250.0)
+            .show(ctx, |ui| {
+                ui.heading("Agents");
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    use std::collections::BTreeMap;
+                    let mut grouped: BTreeMap<String, Vec<&Agent>> = BTreeMap::new();
+                    for agent in &self.agents {
+                        grouped
+                            .entry(agent.repo.clone())
+                            .or_insert_with(Vec::new)
+                            .push(agent);
+                    }
 
-                if grouped.is_empty() {
-                    ui.label(egui::RichText::new("No agents found. Please configure repositories in Settings.")
-                        .color(egui::Color32::GRAY).size(12.0));
-                }
+                    if grouped.is_empty() {
+                        ui.label(
+                            egui::RichText::new(
+                                "No agents found. Please configure repositories in Settings.",
+                            )
+                            .color(egui::Color32::GRAY)
+                            .size(12.0),
+                        );
+                    }
 
-                for (repo, agents) in grouped.iter() {
-                    egui::CollapsingHeader::new(egui::RichText::new(repo).size(13.0).strong())
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            for agent in agents {
-                                let is_selected = self.selected_agent.as_ref() == Some(&agent.id);
+                    for (repo, agents) in grouped.iter() {
+                        egui::CollapsingHeader::new(egui::RichText::new(repo).size(13.0).strong())
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                for agent in agents {
+                                    let is_selected =
+                                        self.selected_agent.as_ref() == Some(&agent.id);
 
-                                let response = ui.group(|ui| {
-                                    if is_selected {
-                                        ui.visuals_mut().widgets.noninteractive.weak_bg_fill = egui::Color32::from_rgb(60, 120, 180);
-                                        ui.visuals_mut().override_text_color = Some(egui::Color32::WHITE);
-                                    }
-                                    ui.set_min_width(220.0);
-                                    ui.vertical(|ui| {
-                                        ui.label(egui::RichText::new(&agent.hostname)
-                                            .size(14.0)
-                                            .strong());
-                                        ui.label(egui::RichText::new(format!("OS: {}", agent.os))
-                                            .size(12.0)
-                                            .color(egui::Color32::GRAY));
-                                        ui.label(egui::RichText::new(format!("User: {}", agent.username))
-                                            .size(12.0)
-                                            .color(egui::Color32::GRAY));
-                                        ui.label(egui::RichText::new(format!("#{}", agent.id))
-                                            .size(11.0)
-                                            .color(egui::Color32::DARK_GRAY));
+                                    let response = ui.group(|ui| {
+                                        if is_selected {
+                                            ui.visuals_mut().widgets.noninteractive.weak_bg_fill =
+                                                egui::Color32::from_rgb(60, 120, 180);
+                                            ui.visuals_mut().override_text_color =
+                                                Some(egui::Color32::WHITE);
+                                        }
+                                        ui.set_min_width(220.0);
+                                        ui.vertical(|ui| {
+                                            ui.label(
+                                                egui::RichText::new(&agent.hostname)
+                                                    .size(14.0)
+                                                    .strong(),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(format!("OS: {}", agent.os))
+                                                    .size(12.0)
+                                                    .color(egui::Color32::GRAY),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "User: {}",
+                                                    agent.username
+                                                ))
+                                                .size(12.0)
+                                                .color(egui::Color32::GRAY),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(format!("#{}", agent.id))
+                                                    .size(11.0)
+                                                    .color(egui::Color32::DARK_GRAY),
+                                            );
+                                        });
                                     });
-                                });
 
-                                if response.response.interact(egui::Sense::click()).clicked() {
-                                    new_selection = Some(agent.id.clone());
+                                    if response.response.interact(egui::Sense::click()).clicked() {
+                                        new_selection = Some(agent.id.clone());
+                                    }
+
+                                    ui.add_space(5.0);
                                 }
-
-                                ui.add_space(5.0);
-                            }
-                        });
-                }
+                            });
+                    }
+                });
             });
-        });
 
         if let Some(id) = new_selection {
-            self.selected_agent = Some(id);
+            self.selected_agent = Some(id.clone());
+            self.use_cmd = self.agent_cmd_prefs.get(&id).copied().unwrap_or(false);
             self.load_history();
-            // 加载该agent的文件浏览状态
             self.load_file_state();
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            match self.current_tab {
-                Tab::Terminal => self.show_terminal(ui),
-                Tab::Files => self.show_files(ui),
-                Tab::Scan => self.show_scan(ui),
-                Tab::Settings => self.show_settings(ui),
-                Tab::Logs => self.show_logs(ui),
-            }
+        egui::CentralPanel::default().show(ctx, |ui| match self.current_tab {
+            Tab::Terminal => self.show_terminal(ui),
+            Tab::Files => self.show_files(ui),
+            Tab::Scan => self.show_scan(ui),
+            Tab::Settings => self.show_settings(ui),
+            Tab::Logs => self.show_logs(ui),
         });
     }
 }
@@ -284,61 +325,85 @@ impl App {
         ui.horizontal(|ui| {
             ui.heading("Terminal");
 
-            // 只在Windows agent时显示切换按钮
             if let Some(agent_id) = &self.selected_agent {
                 if let Some(agent) = self.agents.iter().find(|a| &a.id == agent_id) {
                     if agent.os.to_lowercase().contains("windows") {
                         ui.separator();
                         if ui.selectable_label(!self.use_cmd, "PowerShell").clicked() {
                             self.use_cmd = false;
+                            if let Some(id) = &self.selected_agent {
+                                self.agent_cmd_prefs.insert(id.clone(), false);
+                            }
                         }
                         if ui.selectable_label(self.use_cmd, "CMD").clicked() {
                             self.use_cmd = true;
+                            if let Some(id) = &self.selected_agent {
+                                self.agent_cmd_prefs.insert(id.clone(), true);
+                            }
                         }
                     }
                 }
             }
 
-            // 交互/非交互模式选择
             ui.separator();
-            if ui.selectable_label(!self.use_interactive, "Non-Interactive").clicked() {
+            if ui
+                .selectable_label(!self.use_interactive, "Non-Interactive")
+                .clicked()
+            {
                 self.use_interactive = false;
             }
-            if ui.selectable_label(self.use_interactive, "Interactive").clicked() {
+            if ui
+                .selectable_label(self.use_interactive, "Interactive")
+                .clicked()
+            {
                 self.use_interactive = true;
             }
         });
 
         if !self.pending_commands.is_empty() {
-            ui.colored_label(egui::Color32::from_rgb(255, 200, 0), format!("⏳ {} command(s) executing...", self.pending_commands.len()));
+            ui.colored_label(
+                egui::Color32::from_rgb(255, 200, 0),
+                format!("⏳ {} command(s) executing...", self.pending_commands.len()),
+            );
         }
 
-        egui::ScrollArea::vertical().max_height(500.0).stick_to_bottom(true).show(ui, |ui| {
-            for msg in &self.messages {
-                if msg.is_command {
-                    ui.separator();
-                    ui.label(egui::RichText::new(format!("> {}", msg.content))
-                        .color(egui::Color32::from_rgb(180, 0, 0))
-                        .size(16.0)
-                        .family(egui::FontFamily::Monospace));
-                } else {
-                    ui.label(egui::RichText::new(&msg.content)
-                        .color(egui::Color32::from_rgb(0, 150, 0))
-                        .size(16.0)
-                        .family(egui::FontFamily::Monospace));
-                    ui.separator();
+        egui::ScrollArea::vertical()
+            .max_height(500.0)
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                for msg in &self.messages {
+                    if msg.is_command {
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new(format!("> {}", msg.content))
+                                .color(egui::Color32::from_rgb(180, 0, 0))
+                                .size(16.0)
+                                .family(egui::FontFamily::Monospace),
+                        );
+                    } else {
+                        ui.label(
+                            egui::RichText::new(&msg.content)
+                                .color(egui::Color32::from_rgb(0, 150, 0))
+                                .size(16.0)
+                                .family(egui::FontFamily::Monospace),
+                        );
+                        ui.separator();
+                    }
                 }
-            }
-        });
+            });
 
         ui.separator();
         ui.horizontal(|ui| {
             ui.label(">");
-            let response = ui.add(egui::TextEdit::multiline(&mut self.command_input)
-                .desired_width(ui.available_width() - 80.0)
-                .desired_rows(2)
-                .font(egui::TextStyle::Monospace));
-            if ui.button(egui::RichText::new("Send").size(16.0)).clicked() || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+            let response = ui.add(
+                egui::TextEdit::multiline(&mut self.command_input)
+                    .desired_width(ui.available_width() - 80.0)
+                    .desired_rows(2)
+                    .font(egui::TextStyle::Monospace),
+            );
+            if ui.button(egui::RichText::new("Send").size(16.0)).clicked()
+                || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+            {
                 self.send_command();
             }
         });
@@ -383,8 +448,11 @@ impl App {
                         if !file.is_dir && ui.button("⬇ Download").clicked() {
                             self.download_file(&file.name);
                         }
-                        if ui.button("🗑 Delete").clicked() {
-                            self.confirm_action = Some((format!("Delete File: {}", file.name), format!("Are you sure you want to delete '{}'?", file.name)));
+                        if ui.button("Delete").clicked() {
+                            self.confirm_action = Some((
+                                format!("Delete File: {}", file.name),
+                                format!("Are you sure you want to delete '{}'?", file.name),
+                            ));
                         }
                     });
                     ui.end_row();
@@ -393,9 +461,7 @@ impl App {
         });
 
         ui.separator();
-        if ui.button("📤 Upload File").clicked() {
-            // TODO: file picker
-        }
+        if ui.button("📤 Upload File").clicked() {}
     }
 
     fn show_scan(&mut self, ui: &mut egui::Ui) {
@@ -421,7 +487,10 @@ impl App {
             self.send_command_direct("uninstall");
         }
         if ui.button("Clear History").clicked() {
-            self.confirm_action = Some(("Clear History".to_string(), "Are you sure you want to clear all command history?".to_string()));
+            self.confirm_action = Some((
+                "Clear History".to_string(),
+                "Are you sure you want to clear all command history?".to_string(),
+            ));
         }
     }
 
@@ -436,7 +505,11 @@ impl App {
         ui.horizontal(|ui| {
             ui.label("Add Repo:");
             ui.text_edit_singleline(&mut self.repo_input);
-            ui.label(egui::RichText::new("(format: owner/repo)").size(11.0).color(egui::Color32::GRAY));
+            ui.label(
+                egui::RichText::new("(format: owner/repo)")
+                    .size(11.0)
+                    .color(egui::Color32::GRAY),
+            );
             if ui.button("Add").clicked() && !self.repo_input.is_empty() {
                 if self.repo_input.contains('/') && !self.github_repos.contains(&self.repo_input) {
                     self.github_repos.push(self.repo_input.clone());
@@ -448,23 +521,29 @@ impl App {
         });
 
         ui.label("Repositories:");
-        egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
-            if self.github_repos.is_empty() {
-                ui.label(egui::RichText::new("No repositories added yet").color(egui::Color32::GRAY).size(12.0));
-            }
-            let mut to_remove = None;
-            for (i, repo) in self.github_repos.iter().enumerate() {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(repo).size(13.0));
-                    if ui.button("✖").clicked() {
-                        to_remove = Some(i);
-                    }
-                });
-            }
-            if let Some(i) = to_remove {
-                self.github_repos.remove(i);
-            }
-        });
+        egui::ScrollArea::vertical()
+            .max_height(150.0)
+            .show(ui, |ui| {
+                if self.github_repos.is_empty() {
+                    ui.label(
+                        egui::RichText::new("No repositories added yet")
+                            .color(egui::Color32::GRAY)
+                            .size(12.0),
+                    );
+                }
+                let mut to_remove = None;
+                for (i, repo) in self.github_repos.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(repo).size(13.0));
+                        if ui.button("✖").clicked() {
+                            to_remove = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = to_remove {
+                    self.github_repos.remove(i);
+                }
+            });
 
         ui.horizontal(|ui| {
             ui.label("Password:");
@@ -519,15 +598,24 @@ impl App {
             }
             if ui.button("Reset Comment Cache").clicked() {
                 if let (Some(agent_id), Ok(conn)) = (&self.selected_agent, self.db.lock()) {
-                    let _ = conn.execute("DELETE FROM processed_comments WHERE agent_id = ?1", [agent_id]);
-                    self.logs.push(format!("[{}] 已清空comment缓存", chrono::Local::now().format("%H:%M:%S")));
+                    let _ = conn.execute(
+                        "DELETE FROM processed_comments WHERE agent_id = ?1",
+                        [agent_id],
+                    );
+                    self.logs.push(format!(
+                        "[{}] 已清空comment缓存",
+                        chrono::Local::now().format("%H:%M:%S")
+                    ));
                 }
             }
             if ui.button("Clear Terminal History").clicked() {
                 if let (Some(agent_id), Ok(conn)) = (&self.selected_agent, self.db.lock()) {
                     let _ = conn.execute("DELETE FROM messages WHERE agent_id = ?1", [agent_id]);
                     self.messages.clear();
-                    self.logs.push(format!("[{}] 已清空Terminal历史", chrono::Local::now().format("%H:%M:%S")));
+                    self.logs.push(format!(
+                        "[{}] 已清空Terminal历史",
+                        chrono::Local::now().format("%H:%M:%S")
+                    ));
                 }
             }
         });
@@ -540,16 +628,14 @@ impl App {
     }
 
     fn refresh_agents(&mut self) {
-        if self.github_token.is_empty() || self.github_repos.is_empty() || self.password.is_empty() {
+        if self.github_token.is_empty() || self.github_repos.is_empty() || self.password.is_empty()
+        {
             return;
         }
 
         let mut all_agents = Vec::new();
         for repo in &self.github_repos {
-            let client = crate::github::GitHubClient::new(
-                self.github_token.clone(),
-                repo.clone(),
-            );
+            let client = crate::github::GitHubClient::new(self.github_token.clone(), repo.clone());
             if let Ok(agents) = client.get_agents() {
                 all_agents.extend(agents);
             }
@@ -561,7 +647,6 @@ impl App {
         let mut cmd = self.command_input.clone();
         self.command_input.clear();
 
-        // Windows agent且使用CMD时添加前缀
         if self.use_cmd {
             if let Some(agent_id) = &self.selected_agent {
                 if let Some(agent) = self.agents.iter().find(|a| &a.id == agent_id) {
@@ -572,7 +657,6 @@ impl App {
             }
         }
 
-        // 交互模式添加前缀
         if self.use_interactive {
             cmd = format!("interactive:{}", cmd);
         }
@@ -646,16 +730,14 @@ impl App {
     fn load_file_state(&mut self) {
         if let Some(agent_id) = &self.selected_agent {
             if let Ok(conn) = self.db.lock() {
-                // 尝试加载上次的file_path
                 let key = format!("{}_file_path", agent_id);
                 if let Ok(Some(path)) = crate::db::get_config(&conn, &key) {
                     self.file_path = path;
                 } else {
-                    self.file_path = if cfg!(windows) { "DRIVES".to_string() } else { "/".to_string() };
+                    self.file_path = "DRIVES".to_string();
                 }
             }
         }
-        // 加载文件列表缓存
         self.load_files_from_cache();
     }
 
@@ -677,13 +759,7 @@ impl App {
     }
 
     fn go_parent_dir(&mut self) {
-        // 根据agent的OS决定分隔符
-        let agent_os = self.agents.iter()
-            .find(|a| Some(&a.id) == self.selected_agent.as_ref())
-            .map(|a| a.os.as_str())
-            .unwrap_or("Windows");
-
-        if agent_os.to_lowercase().contains("windows") {
+        if is_agent_windows(&self.agents, self.selected_agent.as_ref()) {
             if self.file_path.ends_with(":\\") {
                 self.file_path = "DRIVES".to_string();
             } else if let Some(pos) = self.file_path.rfind('\\') {
@@ -704,44 +780,62 @@ impl App {
         if self.file_path == "DRIVES" {
             self.file_path = name.to_string();
         } else {
-            // 根据agent的OS决定分隔符
-            let agent_os = self.agents.iter()
-                .find(|a| Some(&a.id) == self.selected_agent.as_ref())
-                .map(|a| a.os.as_str())
-                .unwrap_or("Windows");
-
-            let sep = if agent_os.to_lowercase().contains("windows") { "\\" } else { "/" };
+            let sep = if is_agent_windows(&self.agents, self.selected_agent.as_ref()) {
+                "\\"
+            } else {
+                "/"
+            };
             if !self.file_path.ends_with(sep) {
                 self.file_path.push_str(sep);
             }
             self.file_path.push_str(name);
         }
 
-        // 保存file_path
         if let (Some(agent_id), Ok(conn)) = (&self.selected_agent, self.db.lock()) {
             let key = format!("{}_file_path", agent_id);
             let _ = crate::db::save_config(&conn, &key, &self.file_path);
         }
 
-        // 加载缓存
         self.load_files_from_cache();
 
-        // 如果缓存为空,自动请求
         if self.file_list.is_empty() {
             self.refresh_files();
         }
     }
 
     fn download_file(&mut self, name: &str) {
-        let sep = if cfg!(windows) { "\\" } else { "/" };
-        let path = format!("{}{}{}", self.file_path, if self.file_path.ends_with(sep) { "" } else { sep }, name);
+        let sep = if is_agent_windows(&self.agents, self.selected_agent.as_ref()) {
+            "\\"
+        } else {
+            "/"
+        };
+        let path = format!(
+            "{}{}{}",
+            self.file_path,
+            if self.file_path.ends_with(sep) {
+                ""
+            } else {
+                sep
+            },
+            name
+        );
         self.send_command_direct(&format!("upload {}", path));
     }
 
     fn delete_file_confirmed(&mut self, name: &str) {
-        let sep = if cfg!(windows) { "\\" } else { "/" };
-        let path = format!("{}{}{}", self.file_path, if self.file_path.ends_with(sep) { "" } else { sep }, name);
-        let cmd = if cfg!(windows) {
+        let is_win = is_agent_windows(&self.agents, self.selected_agent.as_ref());
+        let sep = if is_win { "\\" } else { "/" };
+        let path = format!(
+            "{}{}{}",
+            self.file_path,
+            if self.file_path.ends_with(sep) {
+                ""
+            } else {
+                sep
+            },
+            name
+        );
+        let cmd = if is_win {
             format!("Remove-Item -Force '{}'", path)
         } else {
             format!("rm -f '{}'", path)
@@ -759,19 +853,30 @@ impl App {
             let repo = agent.unwrap().repo.clone();
             let client = crate::github::GitHubClient::new(self.github_token.clone(), repo);
 
-            if let Ok(comments) = client.get_responses(agent_id, self.last_comment_time.as_deref()) {
-                // 调试信息
+            if let Ok(comments) = client.get_responses(agent_id, self.last_comment_time.as_deref())
+            {
                 if !comments.is_empty() && self.enable_logging {
-                    self.logs.push(format!("[{}] 获取到 {} 条新回复", chrono::Local::now().format("%H:%M:%S"), comments.len()));
+                    self.logs.push(format!(
+                        "[{}] 获取到 {} 条新回复",
+                        chrono::Local::now().format("%H:%M:%S"),
+                        comments.len()
+                    ));
                 }
 
                 for comment in &comments {
                     if self.enable_logging {
-                        self.logs.push(format!("[{}] 处理comment #{}: {}", chrono::Local::now().format("%H:%M:%S"), comment.id, &comment.body[..50.min(comment.body.len())]));
+                        self.logs.push(format!(
+                            "[{}] 处理comment #{}: {}",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            comment.id,
+                            &comment.body[..50.min(comment.body.len())]
+                        ));
                     }
 
                     if let Ok(conn) = self.db.lock() {
-                        if crate::db::is_comment_processed(&conn, agent_id, comment.id as i64).unwrap_or(false) {
+                        if crate::db::is_comment_processed(&conn, agent_id, comment.id as i64)
+                            .unwrap_or(false)
+                        {
                             if self.enable_logging {
                                 self.logs.push(format!("  -> 已处理,跳过"));
                             }
@@ -787,39 +892,49 @@ impl App {
 
                     if let Ok(decrypted) = crate::crypto::decrypt(body, &self.password) {
                         if self.enable_logging {
-                            self.logs.push(format!("  -> 解密成功: {}", &decrypted[..50.min(decrypted.len())]));
+                            self.logs.push(format!(
+                                "  -> 解密成功: {}",
+                                &decrypted[..50.min(decrypted.len())]
+                            ));
                         }
                         self.process_response(&decrypted);
 
                         if let Ok(conn) = self.db.lock() {
                             let _ = crate::db::save_message(&conn, agent_id, &decrypted, false);
-                            let _ = crate::db::mark_comment_processed(&conn, agent_id, comment.id as i64);
+                            let _ = crate::db::mark_comment_processed(
+                                &conn,
+                                agent_id,
+                                comment.id as i64,
+                            );
                         }
                     } else {
-                        // 解密失败,显示原始内容
+                        let display_body = if body.len() > 100 {
+                            format!("{}...(truncated)", &body[..100])
+                        } else {
+                            body.to_string()
+                        };
                         self.messages.push(Message {
                             timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
-                            content: format!("[Decrypt Failed] {}", body),
+                            content: format!("[Decrypt Failed] {}", display_body),
                             is_command: false,
                         });
                     }
                 }
 
                 if let Some(last) = comments.last() {
-                    self.last_comment_time = Some(last.created_at.clone());
+                    self.last_comment_time = Some(last.updated_at.clone());
                 }
             }
         }
     }
 
     fn process_response(&mut self, response: &str) {
-        self.pending_commands.clear();
-
         if response.starts_with("[Part ") {
             self.handle_chunk(response);
         } else if response.starts_with("[FILES]") {
             self.parse_file_list(response);
         } else {
+            self.pending_commands.clear();
             self.messages.push(Message {
                 timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
                 content: response.to_string(),
@@ -837,21 +952,30 @@ impl App {
                 let total: usize = parts[1].parse().unwrap_or(0);
                 let content = &chunk[end + 2..];
 
-                let key = format!("chunk_{}", total);
-                let chunks = self.chunk_buffer.entry(key.clone()).or_insert_with(|| vec![String::new(); total]);
+                let key = if current == 1 {
+                    self.chunk_counter += 1;
+                    format!("chunk_{}_{}", self.chunk_counter, total)
+                } else {
+                    format!("chunk_{}_{}", self.chunk_counter, total)
+                };
 
                 if current > 0 && current <= total {
+                    let chunks = self
+                        .chunk_buffer
+                        .entry(key.clone())
+                        .or_insert_with(|| vec![String::new(); total]);
                     chunks[current - 1] = content.to_string();
-                }
 
-                if chunks.iter().all(|c| !c.is_empty()) {
-                    let full = chunks.join("");
-                    self.messages.push(Message {
-                        timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
-                        content: full,
-                        is_command: false,
-                    });
-                    self.chunk_buffer.remove(&key);
+                    if chunks.iter().all(|c| !c.is_empty()) {
+                        self.pending_commands.clear();
+                        let full = chunks.join("");
+                        self.messages.push(Message {
+                            timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+                            content: full,
+                            is_command: false,
+                        });
+                        self.chunk_buffer.remove(&key);
+                    }
                 }
             }
         }
@@ -870,7 +994,14 @@ impl App {
                 self.file_list.push(FileItem { name, is_dir, size });
 
                 if let (Some(agent_id), Ok(conn)) = (&self.selected_agent, self.db.lock()) {
-                    let _ = crate::db::save_file_list(&conn, agent_id, &self.file_path, &parts[0], is_dir, size);
+                    let _ = crate::db::save_file_list(
+                        &conn,
+                        agent_id,
+                        &self.file_path,
+                        &parts[0],
+                        is_dir,
+                        size,
+                    );
                 }
             }
         }
