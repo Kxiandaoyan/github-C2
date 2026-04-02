@@ -124,6 +124,7 @@ pub struct App {
     pub command_last_activity: std::collections::HashMap<String, std::time::Instant>,
     pub selected_command_id: Option<String>,
     pub pending_upload: Option<(std::path::PathBuf, String)>,
+    pub preview_content: Option<(String, String, String)>,
 }
 
 fn get_agent_os(agents: &[Agent], selected: Option<&String>) -> String {
@@ -154,7 +155,10 @@ fn quote_posix_single(path: &str) -> String {
 }
 
 fn is_file_message_type(message_type: Option<&str>) -> bool {
-    matches!(message_type, Some("file_list") | Some("file_upload"))
+    matches!(
+        message_type,
+        Some("file_list") | Some("file_upload") | Some("file_preview")
+    )
 }
 
 impl App {
@@ -219,6 +223,7 @@ impl App {
             command_last_activity: std::collections::HashMap::new(),
             selected_command_id: None,
             pending_upload: None,
+            preview_content: None,
         }
     }
 }
@@ -478,7 +483,7 @@ impl App {
                     || msg.response_to.as_deref() == Some(selected_command_id)
             }) {
                 ui.label(
-                    egui::RichText::new(&msg.content)
+                    egui::RichText::new(format!("[{}] {}", msg.timestamp, msg.content))
                         .family(egui::FontFamily::Monospace)
                         .size(13.0),
                 );
@@ -541,17 +546,20 @@ impl App {
                                 break;
                             }
                             ui.label(
-                                egui::RichText::new(&response.content)
-                                    .color(egui::Color32::from_rgb(0, 150, 0))
-                                    .size(16.0)
-                                    .family(egui::FontFamily::Monospace),
+                                egui::RichText::new(format!(
+                                    "[{}] {}",
+                                    response.timestamp, response.content
+                                ))
+                                .color(egui::Color32::from_rgb(0, 150, 0))
+                                .size(16.0)
+                                .family(egui::FontFamily::Monospace),
                             );
                             i += 1;
                         }
                     } else {
                         ui.separator();
                         ui.label(
-                            egui::RichText::new(&msg.content)
+                            egui::RichText::new(format!("[{}] {}", msg.timestamp, msg.content))
                                 .color(egui::Color32::from_rgb(0, 110, 180))
                                 .size(16.0)
                                 .family(egui::FontFamily::Monospace),
@@ -1630,13 +1638,15 @@ impl App {
             }
         };
 
+        let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
+        self.preview_content = Some((preview.path.clone(), timestamp.clone(), preview.content));
         self.messages.push(Message {
-            timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
-            content: format!("[Preview] {}\n{}", preview.path, preview.content),
+            timestamp,
+            content: format!("[Preview Opened] {}", preview.path),
             is_command: false,
             command_id: None,
             response_to: response_to.map(|s| s.to_string()),
-            message_type: Some("text".to_string()),
+            message_type: Some("file_preview".to_string()),
         });
     }
 

@@ -1,11 +1,17 @@
 use std::net::TcpStream;
+use std::net::ToSocketAddrs;
 use std::time::Duration;
 
 pub fn scan_port(host: &str, port: u16) -> bool {
-    TcpStream::connect_timeout(
-        &format!("{}:{}", host, port).parse().unwrap(),
-        Duration::from_secs(1)
-    ).is_ok()
+    let addr = match format!("{}:{}", host, port).to_socket_addrs() {
+        Ok(mut addrs) => match addrs.next() {
+            Some(addr) => addr,
+            None => return false,
+        },
+        Err(_) => return false,
+    };
+
+    TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_ok()
 }
 
 pub fn scan_ports(host: &str, ports: &str) -> String {
