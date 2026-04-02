@@ -133,6 +133,10 @@ fn quote_posix_single(path: &str) -> String {
     path.replace('\'', "'\"'\"'")
 }
 
+fn is_file_message_type(message_type: Option<&str>) -> bool {
+    matches!(message_type, Some("file_list") | Some("file_upload"))
+}
+
 impl App {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let db = crate::db::init_db().expect("Failed to init database");
@@ -420,40 +424,72 @@ impl App {
             .max_height(500.0)
             .stick_to_bottom(true)
             .show(ui, |ui| {
-                let mut last_command_id: Option<String> = None;
-                for msg in self.messages.iter().filter(|msg| {
-                    !matches!(
-                        msg.message_type.as_deref(),
-                        Some("file_list") | Some("file_upload")
-                    )
-                }) {
+                let filtered: Vec<&Message> = self
+                    .messages
+                    .iter()
+                    .filter(|msg| !is_file_message_type(msg.message_type.as_deref()))
+                    .collect();
+
+                let mut i = 0;
+                while i < filtered.len() {
+                    let msg = filtered[i];
                     if msg.is_command {
-                        last_command_id = msg.command_id.clone();
+                        let command_id = msg.command_id.clone();
+                        let status = match command_id.as_deref() {
+                            Some(id) if self.pending_commands.contains_key(id) => "执行中",
+                            Some(id)
+                                if filtered
+                                    .iter()
+                                    .skip(i + 1)
+                                    .any(|m| m.response_to.as_deref() == Some(id)) =>
+                            {
+                                "已完成"
+                            }
+                            _ => "未知",
+                        };
+
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("> {}", msg.content))
+                                    .color(egui::Color32::from_rgb(180, 0, 0))
+                                    .size(16.0)
+                                    .family(egui::FontFamily::Monospace),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("[{}]", status))
+                                    .color(match status {
+                                        "执行中" => egui::Color32::from_rgb(255, 200, 0),
+                                        "已完成" => egui::Color32::from_rgb(0, 180, 0),
+                                        _ => egui::Color32::GRAY,
+                                    })
+                                    .family(egui::FontFamily::Monospace),
+                            );
+                        });
+
+                        i += 1;
+                        while i < filtered.len() {
+                            let response = filtered[i];
+                            if response.is_command || response.response_to != command_id {
+                                break;
+                            }
+                            ui.label(
+                                egui::RichText::new(&response.content)
+                                    .color(egui::Color32::from_rgb(0, 150, 0))
+                                    .size(16.0)
+                                    .family(egui::FontFamily::Monospace),
+                            );
+                            i += 1;
+                        }
+                    } else {
                         ui.separator();
                         ui.label(
-                            egui::RichText::new(format!("> {}", msg.content))
-                                .color(egui::Color32::from_rgb(180, 0, 0))
+                            egui::RichText::new(&msg.content)
+                                .color(egui::Color32::from_rgb(0, 110, 180))
                                 .size(16.0)
                                 .family(egui::FontFamily::Monospace),
                         );
-                        continue;
-                    }
-
-                    let is_same_group =
-                        msg.response_to.is_some() && msg.response_to == last_command_id;
-                    let color = if is_same_group {
-                        egui::Color32::from_rgb(0, 150, 0)
-                    } else {
-                        egui::Color32::from_rgb(0, 110, 180)
-                    };
-                    ui.label(
-                        egui::RichText::new(&msg.content)
-                            .color(color)
-                            .size(16.0)
-                            .family(egui::FontFamily::Monospace),
-                    );
-                    if !is_same_group {
-                        ui.separator();
+                        i += 1;
                     }
                 }
             });
@@ -478,12 +514,13 @@ impl App {
     fn show_files(&mut self, ui: &mut egui::Ui) {
         ui.heading("File Manager");
 
-        for msg in self.messages.iter().rev().take(10).filter(|m| {
-            matches!(
-                m.message_type.as_deref(),
-                Some("file_list") | Some("file_upload")
-            )
-        }) {
+        for msg in self
+            .messages
+            .iter()
+            .rev()
+            .take(10)
+            .filter(|m| is_file_message_type(m.message_type.as_deref()))
+        {
             ui.label(
                 egui::RichText::new(&msg.content)
                     .family(egui::FontFamily::Monospace)
@@ -1122,16 +1159,42 @@ impl App {
                 if current > 0 && current <= total {
                     let key = format!("chunk_{}_{}", response_id, total);
                     self.chunk_part_map.insert(response_id.clone(), key.clone());
-                    let chunks = self
-                        .chunk_buffer
-                        .entry(key.clone())
-                        .or_insert_with(|| vec![String::new(); total]);
+                    if let (Some(agent_id), Ok(conn)) = (&self.selected_agent, self.db.lock()) {
+                        let _ = crate::db::save_chunk_part(
+                            &conn,
+                            agent_id,
+                            &response_id,
+                            total,
+                            current,
+                            content,
+                        );
+                    }
+
+                    let chunks = self.chunk_buffer.entry(key.clone()).or_insert_with(|| {
+                        if let (Some(agent_id), Ok(conn)) = (&self.selected_agent, self.db.lock()) {
+                            if let Ok(saved_parts) =
+                                crate::db::load_chunk_parts(&conn, agent_id, &response_id)
+                            {
+                                let mut restored = vec![String::new(); total];
+                                for (_, saved_current, saved_content) in saved_parts {
+                                    if saved_current > 0 && saved_current <= total {
+                                        restored[saved_current - 1] = saved_content;
+                                    }
+                                }
+                                return restored;
+                            }
+                        }
+                        vec![String::new(); total]
+                    });
                     chunks[current - 1] = content.to_string();
 
                     if chunks.iter().all(|c| !c.is_empty()) {
                         let full = chunks.join("");
                         self.chunk_buffer.remove(&key);
                         self.chunk_part_map.remove(&response_id);
+                        if let (Some(agent_id), Ok(conn)) = (&self.selected_agent, self.db.lock()) {
+                            let _ = crate::db::clear_chunk_parts(&conn, agent_id, &response_id);
+                        }
                         self.process_response(&full, response_to, message_type);
                     }
                 }
@@ -1261,6 +1324,7 @@ impl App {
                         [agent_id],
                     );
                     let _ = conn.execute("DELETE FROM file_list WHERE agent_id = ?1", [agent_id]);
+                    let _ = conn.execute("DELETE FROM chunk_state WHERE agent_id = ?1", [agent_id]);
                 }
 
                 self.file_list.clear();

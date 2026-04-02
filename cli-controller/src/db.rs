@@ -74,6 +74,18 @@ pub fn init_db() -> Result<Connection> {
         [],
     )?;
 
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS chunk_state (
+            agent_id TEXT NOT NULL,
+            response_id TEXT NOT NULL,
+            total INTEGER NOT NULL,
+            current INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            PRIMARY KEY (agent_id, response_id, current)
+        )",
+        [],
+    )?;
+
     Ok(conn)
 }
 
@@ -223,6 +235,52 @@ pub fn mark_comment_processed(conn: &Connection, agent_id: &str, comment_id: i64
     conn.execute(
         "INSERT OR IGNORE INTO processed_comments (agent_id, comment_id) VALUES (?, ?)",
         [agent_id, &comment_id.to_string()],
+    )?;
+    Ok(())
+}
+
+pub fn save_chunk_part(
+    conn: &Connection,
+    agent_id: &str,
+    response_id: &str,
+    total: usize,
+    current: usize,
+    content: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO chunk_state (agent_id, response_id, total, current, content) VALUES (?, ?, ?, ?, ?)",
+        rusqlite::params![agent_id, response_id, total as i64, current as i64, content],
+    )?;
+    Ok(())
+}
+
+pub fn load_chunk_parts(
+    conn: &Connection,
+    agent_id: &str,
+    response_id: &str,
+) -> Result<Vec<(usize, usize, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT total, current, content FROM chunk_state WHERE agent_id = ? AND response_id = ? ORDER BY current",
+    )?;
+    let rows = stmt.query_map([agent_id, response_id], |row| {
+        Ok((
+            row.get::<_, i64>(0)? as usize,
+            row.get::<_, i64>(1)? as usize,
+            row.get(2)?,
+        ))
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn clear_chunk_parts(conn: &Connection, agent_id: &str, response_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM chunk_state WHERE agent_id = ? AND response_id = ?",
+        [agent_id, response_id],
     )?;
     Ok(())
 }
