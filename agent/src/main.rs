@@ -10,7 +10,7 @@ mod scan;
 mod timewindow;
 mod selfdel;
 mod filetransfer;
-mod linux_sensitive;
+#[cfg(unix)]
 mod rootkit;
 mod backup_config;
 

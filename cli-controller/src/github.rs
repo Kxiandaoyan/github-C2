@@ -1,31 +1,17 @@
 use crate::app::Agent;
-use serde::{Deserialize, Serialize};
-
-#[derive(Serialize)]
-struct IssueCreate {
-    title: String,
-    body: String,
-    labels: Vec<String>,
-}
+use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct Issue {
     number: u64,
     title: String,
     body: Option<String>,
-    labels: Vec<Label>,
-}
-
-#[derive(Deserialize)]
-struct Label {
-    name: String,
 }
 
 #[derive(Deserialize)]
 pub struct Comment {
     pub id: u64,
     pub body: String,
-    pub created_at: String,
     pub updated_at: String,
 }
 

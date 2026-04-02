@@ -11,6 +11,12 @@ struct FileUploadResponse {
     data: String,
 }
 
+#[derive(Serialize)]
+struct FilePreviewResponse {
+    path: String,
+    content: String,
+}
+
 #[derive(Deserialize)]
 pub struct UploadChunkRequest {
     pub transfer_id: String,
@@ -76,6 +82,10 @@ pub fn download_file(path: &str, base64_data: &str) -> Result<String, String> {
 }
 
 pub fn handle_upload_chunk(request: UploadChunkRequest) -> Result<String, String> {
+    if request.total_chunks == 0 {
+        return Err("Error: Invalid total_chunks".to_string());
+    }
+
     let state_dir = get_upload_state_dir(&request.transfer_id)?;
     fs::create_dir_all(&state_dir).map_err(|e| format!("Error: {}", e))?;
 
@@ -107,6 +117,29 @@ pub fn handle_upload_chunk(request: UploadChunkRequest) -> Result<String, String
     assemble_uploaded_file(&state_dir, &request.path, request.total_chunks)?;
     fs::remove_dir_all(&state_dir).ok();
     Ok(format!("[UPLOAD_COMPLETE] {}", request.path))
+}
+
+pub fn preview_file(path: &str) -> Result<String, String> {
+    const MAX_PREVIEW_SIZE: u64 = 200 * 1024;
+
+    let metadata = fs::metadata(path).map_err(|e| format!("Error: {}", e))?;
+    if metadata.len() > MAX_PREVIEW_SIZE {
+        return Ok(format!(
+            "[FILE_PREVIEW_NOTICE] File too large to preview (>200KB). Please download it."
+        ));
+    }
+
+    let data = fs::read(path).map_err(|e| format!("Error: {}", e))?;
+    let content = String::from_utf8(data).map_err(|_| {
+        "[FILE_PREVIEW_NOTICE] Binary file detected. Please download it.".to_string()
+    })?;
+
+    serde_json::to_string(&FilePreviewResponse {
+        path: path.to_string(),
+        content,
+    })
+    .map(|payload| format!("[FILE_PREVIEW_JSON]\n{}", payload))
+    .map_err(|e| format!("Error: {}", e))
 }
 
 fn get_upload_state_dir(transfer_id: &str) -> Result<PathBuf, String> {

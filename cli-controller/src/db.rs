@@ -95,26 +95,6 @@ pub fn init_db() -> Result<Connection> {
     Ok(conn)
 }
 
-pub fn get_cached_files(conn: &Connection, agent_id: &str, path: &str) -> Result<Option<String>> {
-    let mut stmt =
-        conn.prepare("SELECT content FROM file_cache WHERE agent_id = ? AND path = ?")?;
-    let mut rows = stmt.query([agent_id, path])?;
-
-    if let Some(row) = rows.next()? {
-        Ok(Some(row.get(0)?))
-    } else {
-        Ok(None)
-    }
-}
-
-pub fn save_file_cache(conn: &Connection, agent_id: &str, path: &str, content: &str) -> Result<()> {
-    conn.execute(
-        "INSERT OR REPLACE INTO file_cache (agent_id, path, content, timestamp) VALUES (?, ?, ?, datetime('now'))",
-        [agent_id, path, content],
-    )?;
-    Ok(())
-}
-
 pub fn save_config(conn: &Connection, key: &str, value: &str) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",

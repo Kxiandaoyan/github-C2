@@ -16,6 +16,12 @@ struct FileUploadPayload {
     data: String,
 }
 
+#[derive(Deserialize)]
+struct FilePreviewPayload {
+    path: String,
+    content: String,
+}
+
 #[derive(Serialize, Deserialize)]
 struct CommandEnvelope {
     command_id: String,
@@ -626,6 +632,9 @@ impl App {
                         if !file.is_dir && ui.button("⬇ Download").clicked() {
                             self.download_file(&file.name);
                         }
+                        if !file.is_dir && ui.button("Preview").clicked() {
+                            self.preview_file(&file.name);
+                        }
                         if ui.button("Delete").clicked() {
                             self.confirm_action = Some((
                                 format!("Delete File: {}", file.name),
@@ -1044,6 +1053,25 @@ impl App {
         self.send_command_direct(&format!("upload {}", path));
     }
 
+    fn preview_file(&mut self, name: &str) {
+        let sep = if is_agent_windows(&self.agents, self.selected_agent.as_ref()) {
+            "\\"
+        } else {
+            "/"
+        };
+        let path = format!(
+            "{}{}{}",
+            self.file_path,
+            if self.file_path.ends_with(sep) {
+                ""
+            } else {
+                sep
+            },
+            name
+        );
+        self.send_command_direct(&format!("readfile {}", path));
+    }
+
     fn upload_file(&mut self) {
         if self.file_path == "DRIVES" {
             self.error_message =
@@ -1103,6 +1131,41 @@ impl App {
                 return;
             }
         };
+
+        if file_data.is_empty() {
+            let payload = match serde_json::to_string(&UploadChunkCommand {
+                transfer_id: format!(
+                    "upload-{}-{}",
+                    chrono::Utc::now().timestamp_millis(),
+                    rand::random::<u64>()
+                ),
+                path: remote_path.clone(),
+                chunk_index: 0,
+                total_chunks: 1,
+                data: String::new(),
+            }) {
+                Ok(payload) => payload,
+                Err(e) => {
+                    self.error_message = Some(format!("Failed to encode upload chunk: {}", e));
+                    return;
+                }
+            };
+
+            self.send_command_direct(&format!("upload_chunk {}", payload));
+            self.messages.push(Message {
+                timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+                content: format!(
+                    "[Upload Started] {} -> {} (empty file)",
+                    local_path.display(),
+                    remote_path
+                ),
+                is_command: false,
+                command_id: None,
+                response_to: None,
+                message_type: Some("file_upload".to_string()),
+            });
+            return;
+        }
 
         const UPLOAD_CHUNK_SIZE: usize = 24 * 1024;
         let chunks: Vec<String> = file_data
@@ -1305,6 +1368,19 @@ impl App {
         } else if response.starts_with("[FILE_UPLOAD_JSON]") {
             self.clear_pending(response_to);
             self.handle_uploaded_file(response, response_to);
+        } else if response.starts_with("[FILE_PREVIEW_JSON]") {
+            self.clear_pending(response_to);
+            self.handle_file_preview(response, response_to);
+        } else if response.starts_with("[FILE_PREVIEW_NOTICE]") {
+            self.clear_pending(response_to);
+            self.messages.push(Message {
+                timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+                content: response.to_string(),
+                is_command: false,
+                command_id: None,
+                response_to: response_to.map(|s| s.to_string()),
+                message_type: Some("file_preview".to_string()),
+            });
         } else if response.starts_with("[UPLOAD_PROGRESS]")
             || response.starts_with("[UPLOAD_COMPLETE]")
         {
@@ -1539,6 +1615,29 @@ impl App {
                 self.error_message = Some(format!("Failed to save file: {}", e));
             }
         }
+    }
+
+    fn handle_file_preview(&mut self, response: &str, response_to: Option<&str>) {
+        let Some(payload) = response.strip_prefix("[FILE_PREVIEW_JSON]\n") else {
+            return;
+        };
+
+        let preview = match serde_json::from_str::<FilePreviewPayload>(payload) {
+            Ok(preview) => preview,
+            Err(e) => {
+                self.error_message = Some(format!("Failed to parse file preview: {}", e));
+                return;
+            }
+        };
+
+        self.messages.push(Message {
+            timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+            content: format!("[Preview] {}\n{}", preview.path, preview.content),
+            is_command: false,
+            command_id: None,
+            response_to: response_to.map(|s| s.to_string()),
+            message_type: Some("text".to_string()),
+        });
     }
 
     fn clear_history(&mut self) {

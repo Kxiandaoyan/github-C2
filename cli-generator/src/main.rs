@@ -18,31 +18,8 @@ struct Config {
 
 fn main() {
     println!("=== GitHub C2 Agent 生成器 ===\n");
-
     let config_path = "generator_config.json";
-    let mut config = if let Ok(data) = fs::read_to_string(config_path) {
-        serde_json::from_str(&data).unwrap_or_default()
-    } else {
-        Config::default()
-    };
-
-    if !config.token.is_empty() {
-        print!("检测到上次配置，是否使用Token/Repo/密码? (y/n) [默认y]: ");
-        io::stdout().flush().unwrap();
-        let mut use_last = String::new();
-        io::stdin().read_line(&mut use_last).unwrap();
-        if use_last.trim().to_lowercase() == "n" {
-            config = Config::default();
-        } else {
-            let saved_token = config.token.clone();
-            let saved_repo = config.repo.clone();
-            let saved_password = config.password.clone();
-            config = Config::default();
-            config.token = saved_token;
-            config.repo = saved_repo;
-            config.password = saved_password;
-        }
-    }
+    let mut config = Config::default();
 
     print!("GitHub Token: ");
     io::stdout().flush().unwrap();
@@ -120,7 +97,6 @@ fn main() {
         return;
     }
 
-    let _ = fs::write(config_path, serde_json::to_string_pretty(&config).unwrap());
     generate_agent(&config);
 
     if fs::metadata(config_path).is_ok() {

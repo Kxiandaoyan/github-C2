@@ -56,16 +56,6 @@ pub fn list_files(path: &str) -> String {
     }
 }
 
-pub fn read_file(path: &str) -> Result<Vec<u8>, String> {
-    fs::read(path).map_err(|e| format!("Error: {}", e))
-}
-
-pub fn write_file(path: &str, data: &[u8]) -> Result<String, String> {
-    fs::write(path, data)
-        .map(|_| "File written".to_string())
-        .map_err(|e| format!("Error: {}", e))
-}
-
 #[cfg(windows)]
 fn list_drives() -> String {
     let mut items = Vec::new();

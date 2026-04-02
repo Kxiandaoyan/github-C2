@@ -30,6 +30,14 @@ pub fn execute_command(cmd: &str) -> String {
         };
     }
 
+    if cmd.starts_with("readfile ") {
+        let path = cmd.strip_prefix("readfile ").unwrap().trim();
+        return match crate::filetransfer::preview_file(path) {
+            Ok(msg) => msg,
+            Err(e) => e,
+        };
+    }
+
     if cmd.starts_with("download ") {
         let rest = &cmd[9..];
         if let Some(last_space) = rest.rfind(' ') {
