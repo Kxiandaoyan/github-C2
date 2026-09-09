@@ -4,7 +4,7 @@
 
 > 仅限你拥有或已获书面授权的环境。未授权侵入他人系统违法。
 
-[English](#english)
+英文文档（与本文一一对应）：[README_EN.md](README_EN.md)
 
 ---
 
@@ -16,7 +16,7 @@ GitHub C2 由三部分组成：
 
 | 组件 | 作用 |
 |---|---|
-| **Web 控制台** | Flask 网页后台。侧栏选 Agent，顶栏切换功能。中文 / 英文界面。 |
+| **Web 控制台** | Flask 网页后台。侧栏选 Agent，顶栏切换功能。自带中 / 英语言包。 |
 | **Agent** | Rust 编写，部署在目标机。轮询取令、加密回传、可持久化与伪装。 |
 | **通道** | 把指令和回显搬过去。主通道是 Cloudflare Worker + D1；备用是 GitHub Issue；也可只用 Notion 或只用其中一条。 |
 
@@ -71,11 +71,55 @@ mindmap
 
 侧栏列出已上线的 Agent，顶部切换业务页。终端、反弹 Shell、文件、隧道、扫描、系统信息、资料库、报告、升级在同一工作区。
 
+控制台内置语言包（`static/js/lang/zh.js`、`en.js`）。右上角 **EN / 中文** 一键切换，选择会记在浏览器里；未选过则按系统语言默认。下面截图是中文界面，切到 EN 后同一套页面为英文。
+
 ![控制台终端](img/console.png)
 
 生成器在网页里选通道、填凭据、编译，完成后直接下载二进制。双通道为 **Worker 主 + GitHub 备**。
 
 ![Agent 生成器](img/builder.png)
+
+### 凭据与权限
+
+两种 Token 用途完全不同，不要共用、不要给多余权限。
+
+| Token | 用在哪 | 会不会进 Agent | 干什么 |
+|---|---|---|---|
+| **Cloudflare API Token** | 只在控制台「设置 → 一键部署 Worker」 | **不会。** 只留在控制台服务器 | 部署中继：建 D1、上传 Worker、绑密钥 |
+| **GitHub Token** | 生成器编包 / 设置里的扫描列表 | **会。** 写进二进制，目标机上能被抠出来 | Agent 上线：读 Issue 命令、回评论 |
+
+#### Cloudflare API Token（只用于部署中继）
+
+打开 [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens) → **Create Token** → **Create Custom Token**。Cloudflare 控制台中英文下权限名称不一样，请按下表对照勾选（资源选 **所有帐户 / All accounts**，或只包含你的那一个帐户）。
+
+| 中文控制台 | English dashboard | 级别 |
+|---|---|---|
+| 帐户 · D1 · **编辑** | Account · D1 · **Edit** | 建库、建表 |
+| 帐户 · Workers 脚本 · **编辑** | Account · Workers Scripts · **Edit** | 上传 Worker、绑 Secret、挂 cron |
+| 帐户 · 帐户设置 · **读取** | Account · Account Settings · **Read** | 自动定位帐户（`GET /accounts`） |
+
+列表页上会缩成「帐户.D1、帐户.Workers 脚本、+1」；点进摘要应能看到上面三条：
+
+![Cloudflare Token 列表](img/cf-token-list.png)
+
+![Cloudflare Token 权限摘要](img/cf-token-perms.png)
+
+这个 Token **只给控制台用来部署中继**，不要编进 Agent，部署完成后可在 Cloudflare 面板删掉或收紧。若 Token 看不到帐户列表，把 Dashboard 右侧的 **帐户 ID / Account ID** 填进部署表单即可。
+
+#### GitHub Token（编进 Agent，用于上线）
+
+GitHub Token 会随二进制落到目标机。权限过大等于把仓库钥匙交给任何拿到样本的人。请用 **Fine-grained personal access token**，只开一个**私有**仓库：
+
+1. 只选你建好的隐私仓库（Only select repositories）。
+2. Repository permissions：
+   - **Issues** → **Read and write**（读命令、写回显评论）
+   - **Metadata** → **Read-only**（系统必选，不要再加 Contents / Administration / Actions）
+
+![GitHub Token 最小权限](img/github-token.png)
+
+图中红字标注即：选择你事先建好的隐私仓库。
+
+不要给 `repo` 经典全仓库权限，不要给组织管理员、不要给多个仓库。控制台设置里用于扫描的 Token 也按同一最小权限配置。
 
 ---
 
@@ -199,7 +243,7 @@ mindmap
 **编包字段**
 
 - 通信 Secret：与控制台解密密码相同。部署时写过一次，编包可留空沿用。改了则旧 Agent 全部解不开。
-- GitHub Token / 仓库：单 GitHub 或双通道备用时必填真凭据。
+- GitHub Token / 仓库：单 GitHub 或双通道备用时必填。此 Token **会编进 Agent**，只开 Issues 读写，见「凭据与权限」。
 - Worker URL、Secret、Path：Worker / 双通道必填；Path 空则中继返回 404。
 - 切换阈值 / 主探测间隔：仅双通道，默认 3 轮切备、5 轮探主。
 - 轮询间隔：默认 30 秒；有交互会加快，闲置会放慢。
@@ -232,14 +276,14 @@ mindmap
 
 #### 设置
 
-- **GitHub Token**：可加多枚，只显示末四位，轮流使用以减轻限额。
+- **GitHub Token**：可加多枚，只显示末四位，轮流使用以减轻限额。编包用的那枚会进 Agent，权限必须按「凭据与权限」收紧。
 - **控制器解密密码**：加解密指令与回包，与生成器通信 Secret 同步。
 - **仓库列表**：控制台扫描 / 发令用的 `owner/repo`。双通道备用仓库会并进扫描列表。
 - **Notion**：Token、数据库 ID；可一键给库补齐所需列。
 - **Worker**：URL（可多个、逗号分隔）、共享密钥、路径前缀。空字段保存不覆盖；填单独一个 `-` 才清空。
 - **轮询间隔 / 评论保留条数 / 过期天数**：控制后台扫描节奏和自动清理。
 - **Web 用户名 / 密码**：改控制台登录；改完重启后仍有效。
-- **一键部署 Worker**：填 Cloudflare API Token，自动建 D1、建表、上传 Worker、绑密钥、挂每小时清理、打开 workers.dev，并写回设置 / 生成器（第一次会把空的 GitHub 单通道提升为双通道，之后不再擅自改档）。
+- **一键部署 Worker**：填 **Cloudflare API Token**（只用于部署中继，不会进 Agent）。自动建 D1、建表、上传 Worker、绑密钥、挂每小时清理、打开 workers.dev，并写回设置 / 生成器（第一次会把空的 GitHub 单通道提升为双通道，之后不再擅自改档）。权限见「凭据与权限」。
 - **审计日志**：谁在何时对哪台 Agent 做了什么。
 
 空 Token、空密码保存时不会把已有机密覆盖掉。设置页的 GET 接口不把 Secret 全文回给浏览器。
@@ -313,9 +357,9 @@ bash deploy.sh --user admin --pass '你的密码' --c2-secret '通信密钥' --p
 
 ### 安装之后
 
-1. 浏览器打开脚本打印的地址，进入控制台。
-2. **设置 → Cloudflare Worker 中转**：用 API Token 一键部署中继（或按 `c2/web-controller/cloudflare-worker/README.md` 手动 wrangler）。
-3. **生成器**选「双通道」，确认 Worker 三件套和 GitHub 备用 Token / 仓库，点编译，下载二进制。
+1. 浏览器打开脚本打印的地址，进入控制台。需要英文界面时点右上角 **EN / 中文**。
+2. **设置 → Cloudflare Worker 中转**：用「凭据与权限」里的 Cloudflare Token 一键部署中继（只用于部署，不会写进 Agent）。也可按 `c2/web-controller/cloudflare-worker/README.md` 手动 wrangler。
+3. **生成器**选「双通道」，确认 Worker 三件套，再填**最小权限**的 GitHub 备用 Token / 仓库（此 Token 会编进 Agent）。点编译，下载二进制。
 4. 在授权目标机运行 Agent。侧栏出现一条记录，通道徽章为 Worker + GitHub。
 5. 先在终端发一条无害命令确认回显，再使用 Shell / 文件 / 隧道等页。
 
@@ -372,74 +416,3 @@ rm -rf /opt/github-C2
 无文件（memfd）模式本来就没有落地文件和持久化，目标机重启即无；仍可下发卸载以结束当前进程。
 
 时间窗外的 Agent 也会检查紧急停机信号。需要一次清掉所有 Agent 时，使用 MCP **full** 档的 killswitch，并传入确认串 `YES-DESTROY-ALL`。
-
----
-
-## English
-
-Authorized-lab command console. A browser UI drives Rust agents: commands, interactive PTY, files, SOCKS, scanning, collection, builds, and upgrades. Traffic prefers your Cloudflare Worker relay; GitHub Issues are the backup. The agent fails over and fails back by itself.
-
-> Use only on systems you own or are written-authorized to test. Unauthorized access is illegal.
-
-### Introduction
-
-Three parts: a Flask **web console**, a Rust **agent**, and **channels** (Worker + D1 primary, GitHub Issues backup, optional Notion). Payloads are AES-256-GCM. A dual-channel host appears as one sidebar row.
-
-**Sidebar** — search, notes, online count, refresh discovery, prune channel comments, logout.
-
-**Terminal** — send commands, interactive mode, filter cmd/resp/sys, live scroll, local history, clear console history.
-
-**Reverse shell** — bundled `cliws` on the controller, in-memory `wspty` on the agent, xterm over WebSocket, session history, no extra files on the target.
-
-**Files** — browse, breadcrumbs, preview (text/image/PDF/hex), download into the library, upload in chunks, sendit for large pulls.
-
-**Tunnel** — bundled Stowaway admin locally; in-memory SOCKS node on the agent. Point tools at `127.0.0.1:<socks-port>`.
-
-**Scan** — push and run fscan (`/tmp/.san`): deploy, run, stop, wipe, read results.
-
-**System info** — host inventory and sensitive-path collection with snapshots; uninstall the current agent from this page.
-
-**Library** — per-agent notes and files on the controller disk (edit text, preview Markdown, download binaries).
-
-**Report** — searchable Markdown export of notes, history, output, and sysinfo.
-
-**Upgrade** — Linux only: download a new binary, replace the hidden path, reinstall persistence, keep the same agent identity. Failed upgrades leave the old process running.
-
-**Builder** — four profiles (GitHub / Notion / Worker / dual = Worker primary + GitHub backup). Configures secrets, poll interval, time window, arch, guards, process disguise, strip/UPX, HMAC backup URL, memfd deploy, and raw shellcode.
-
-**MCP** — stdio server for AI clients. Toolsets: `handoff` (list only), `core` (command/files/audit/tunnel), `full` (upload, sensitive, killswitch with `YES-DESTROY-ALL`).
-
-**Settings** — GitHub token pool, decrypt secret, repos, Notion, Worker URLs/secret/path, poll/cleanup, web login, one-click Worker deploy, audit log. Empty fields do not wipe stored secrets; GET responses never return full secrets.
-
-Reliability: dual-write on send, visible `[Channel]` notices, rollback if the notice fails, D1 sequence-reset healing, kill checks outside the time window.
-
-### Install
-
-```bash
-git clone https://github.com/Kxiandaoyan/github-C2.git
-cd github-C2
-bash deploy.sh
-```
-
-Creates a venv, writes `c2/.runtime.env` (mode 0600), installs Rust/musl when needed, starts `c2-controller` via systemd (or a 5s respawn loop), and health-checks login. Re-run `deploy.sh` to upgrade; a failed health check rolls back.
-
-Flags: `--user` `--pass` `--c2-secret` `--port` `--bind` `--noninteractive` `--skip-toolchain` `--skip-always-poll` `--no-systemd`.
-
-Then: deploy the Worker from Settings, build a dual-channel agent, run it on an authorized host, confirm a terminal echo.
-
-### Uninstall
-
-**Console (root install):**
-
-```bash
-systemctl stop c2-controller
-systemctl disable c2-controller
-rm -f /etc/systemd/system/c2-controller.service
-systemctl daemon-reload
-rm -f /etc/logrotate.d/c2-controller
-rm -rf /path/to/github-C2
-```
-
-Delete the Cloudflare Worker/D1 in the dashboard yourself.
-
-**Agent:** System Info or Upgrade → Uninstall Agent. It removes persistence and state, then self-deletes. Memfd agents die on reboot; uninstall still kills the live process. Fleet-wide destroy is MCP `full` killswitch with `confirm=YES-DESTROY-ALL`.
