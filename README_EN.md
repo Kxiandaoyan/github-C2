@@ -4,7 +4,8 @@ A red-team command console for authorized labs. From the browser you drive agent
 
 > Use only on systems you own or are written-authorized to test. Unauthorized access is illegal.
 
-Chinese document (same sections, same order): [README.md](README.md)
+Chinese document (same sections, same order): [README.md](README.md)  
+Manual Worker relay deploy: [WORKER_EN.md](WORKER_EN.md)
 
 ---
 
@@ -322,7 +323,17 @@ Cross-compiles the agent with Rust on the console host, then offers a download.
 
 - Channel secret: same as the console decrypt password. If you set it at deploy time, leave the builder field empty to reuse. **Changing it orphans every old agent.**
 - GitHub token / repo: required for GitHub-only or dual backup. This token **is compiled into the agent**. Grant Issues read/write only — see Credentials and permissions.
-- Worker URL, secret, path: required for Worker / dual. An empty path makes the relay return 404.
+- **Worker triple** (required for Worker / dual). **Path is not a password — do not swap it with Secret.** Full table and manual deploy: [WORKER_EN.md](WORKER_EN.md).
+
+  | Field | What it is | If wrong |
+  |---|---|---|
+  | Worker URL | Relay host, e.g. `https://c2relay.xxx.workers.dev` — **no path on the end** | Cannot connect |
+  | Worker Path (`PATH_SECRET`) | **First URL segment**, like a folder name, e.g. `a3f9k2-status`. Not an HTTP header | Relay returns **404** |
+  | Worker Secret (`C2_AUTH`) | Header `X-C2-Auth` — this is the relay password | **401** |
+  | Channel secret | AES envelope key, **not on Cloudflare** | You connect but cannot decrypt |
+
+  The real request is `https://<URL>/<Path>/reg` with Secret in the header. An empty Path hits `/reg`; the relay requires the prefix, so you get 404.
+
 - Failover threshold / primary probe interval: dual only. Defaults: 3 rounds to fail over, 5 rounds before probing primary.
 - **Poll interval (fully automatic):** you only set the base, default `30` seconds. The agent **detects operator activity by itself** — you do not tune fast/slow by hand:
   - **Hot** (a command in the last 2 minutes) → faster, 15 seconds at most
@@ -389,10 +400,10 @@ The on-page kill button was removed from Settings to prevent wiping the fleet by
 - **Console decrypt password**: encrypts commands and decrypts replies; synced with the builder channel secret.
 - **Repository list**: `owner/repo` used for scan / send. Dual-channel backup repos are merged into this list.
 - **Notion**: token and database IDs; one click adds the required columns.
-- **Worker**: URLs (comma-separated), shared secret, path prefix. Empty fields do not overwrite; a single `-` clears a field.
+- **Worker triple:** URLs (comma-separated, **origin only**), **Worker Secret** (`C2_AUTH`, header password), **Worker Path** (`PATH_SECRET`, first URL segment — **not a password**). Empty fields do not overwrite; a single `-` clears a field. See [WORKER_EN.md](WORKER_EN.md).
 - **Poll interval / comment cap / stale days**: background scan pace and auto-cleanup.
 - **Web username / password**: console login; survives restart.
-- **One-click Worker deploy**: paste a **Cloudflare API Token** (relay deploy only — never baked into the agent). Creates D1, applies schema, uploads the Worker, binds secrets, attaches hourly cleanup, enables workers.dev, and writes Settings / Builder (the first time it may promote an empty GitHub profile to dual; later it leaves your profile alone). Permissions: see Credentials and permissions.
+- **One-click Worker deploy**: paste a **Cloudflare API Token** (relay deploy only — never baked into the agent). Creates D1, applies schema, uploads the Worker, writes `C2_AUTH` + `PATH_SECRET`, attaches hourly cleanup, enables workers.dev, and writes the triple into Settings / Builder (the first time it may promote an empty GitHub profile to dual; later it leaves your profile alone). Permissions: see Credentials and permissions. **To build the relay yourself without giving the console a token, follow [WORKER_EN.md](WORKER_EN.md).**
 - **Audit log**: who did what, to which agent, when.
 
 Saving empty tokens or passwords does not wipe stored secrets. Settings GET responses never return full secrets to the browser.
@@ -467,8 +478,8 @@ Unattended plus toolchain: `C2_INSTALL_TOOLCHAIN=1 bash deploy.sh --noninteracti
 ### After install
 
 1. Open the printed URL and enter the console. Use **EN / 中文** at the top-right for the English UI.
-2. **Settings → Cloudflare Worker relay**: deploy the relay with the Cloudflare token from Credentials and permissions (deploy only — not written into the agent). Or follow `c2/web-controller/cloudflare-worker/README.md` and use wrangler by hand.
-3. **Builder** → Dual-channel. Confirm the Worker triple, then fill a **least-privilege** GitHub backup token / repo (this token **is compiled into the agent**). Build and download.
+2. **Settings → Cloudflare Worker relay**: deploy the relay with the Cloudflare token from Credentials and permissions (deploy only — not written into the agent). To do it by hand in the dashboard or wrangler: [WORKER_EN.md](WORKER_EN.md). Then type URL / Secret / Path yourself (Path is the first URL segment, not a password).
+3. **Builder** → Dual-channel. Confirm the Worker **triple** (URL, Secret, Path match Settings), then fill a **least-privilege** GitHub backup token / repo (this token **is compiled into the agent**). Build and download.
 4. Run the agent on an authorized target. One sidebar row should appear with Worker + GitHub badges.
 5. Send a harmless terminal command and confirm the echo before using Shell / Files / Tunnel.
 

@@ -4,7 +4,8 @@
 
 > 仅限你拥有或已获书面授权的环境。未授权侵入他人系统违法。
 
-英文文档（与本文一一对应）：[README_EN.md](README_EN.md)
+英文文档（与本文一一对应）：[README_EN.md](README_EN.md)  
+手动部署 Worker 中继：[WORKER.md](WORKER.md)
 
 ---
 
@@ -322,7 +323,17 @@ GitHub Token 会随二进制落到目标机。权限过大等于把仓库钥匙�
 
 - 通信 Secret：与控制台解密密码相同。部署时写过一次，编包可留空沿用。**改了则旧 Agent 全部解不开。**
 - GitHub Token / 仓库：单 GitHub 或双通道备用时必填。此 Token **会编进 Agent**，只开 Issues 读写，见「凭据与权限」。
-- Worker URL、Secret、Path：Worker / 双通道必填；Path 空则中继返回 404。
+- **Worker 三件套**（Worker / 双通道必填）。**Path 不是密码，不要和 Secret 填反。** 完整对照和手动部署见 [WORKER.md](WORKER.md)。
+
+  | 栏 | 是什么 | 填错 |
+  |---|---|---|
+  | Worker URL | 中继主机，如 `https://c2relay.xxx.workers.dev`，**不要带后面的路径** | 连不上 |
+  | Worker Path（`PATH_SECRET`） | URL **第一段**，像目录名，例如 `a3f9k2-status`。不进 HTTP 头 | 中继回 **404** |
+  | Worker Secret（`C2_AUTH`） | 请求头 `X-C2-Auth`，这才是中继口令 | **401** |
+  | 通信 Secret | AES 信封密钥，**不在 Cloudflare 上** | 能连上但解不开回包 |
+
+  真正访问的是 `https://<URL>/<Path>/reg`，头里带 Secret。Path 留空会打到 `/reg`，中继强制要前缀，所以 404。
+
 - 切换阈值 / 主探测间隔：仅双通道，默认 3 轮切备、5 轮探主。
 - **轮询间隔（全自动识别）：** 你只填基数，默认 `30` 秒。Agent **自己判断有没有人在操作**，不用手调快慢：
   - **热**（近 2 分钟有过命令）→ 加快，最快 15 秒
@@ -389,10 +400,10 @@ GitHub Token 会随二进制落到目标机。权限过大等于把仓库钥匙�
 - **控制器解密密码**：加解密指令与回包，与生成器通信 Secret 同步。
 - **仓库列表**：控制台扫描 / 发令用的 `owner/repo`。双通道备用仓库会并进扫描列表。
 - **Notion**：Token、数据库 ID；可一键给库补齐所需列。
-- **Worker**：URL（可多个、逗号分隔）、共享密钥、路径前缀。空字段保存不覆盖；填单独一个 `-` 才清空。
+- **Worker 三件套：** URL（可多个、逗号分隔，**只写到域名**）、**Worker Secret**（`C2_AUTH`，请求头口令）、**Worker Path**（`PATH_SECRET`，URL 第一段，**不是密码**）。空字段保存不覆盖；填单独一个 `-` 才清空。对照见 [WORKER.md](WORKER.md)。
 - **轮询间隔 / 评论保留条数 / 过期天数**：控制后台扫描节奏和自动清理。
 - **Web 用户名 / 密码**：改控制台登录；改完重启后仍有效。
-- **一键部署 Worker**：填 **Cloudflare API Token**（只用于部署中继，不会进 Agent）。自动建 D1、建表、上传 Worker、绑密钥、挂每小时清理、打开 workers.dev，并写回设置 / 生成器（第一次会把空的 GitHub 单通道提升为双通道，之后不再擅自改档）。权限见「凭据与权限」。
+- **一键部署 Worker**：填 **Cloudflare API Token**（只用于部署中继，不会进 Agent）。自动建 D1、建表、上传 Worker、写入 `C2_AUTH` + `PATH_SECRET`、挂每小时清理、打开 workers.dev，并写回设置 / 生成器的三件套（第一次会把空的 GitHub 单通道提升为双通道，之后不再擅自改档）。权限见「凭据与权限」。**不想把 Token 交给控制台时，按 [WORKER.md](WORKER.md) 手动搭。**
 - **审计日志**：谁在何时对哪台 Agent 做了什么。
 
 空 Token、空密码保存时不会把已有机密覆盖掉。设置页的 GET 接口不把 Secret 全文回给浏览器。
@@ -467,8 +478,8 @@ bash deploy.sh --user admin --pass '你的密码' --c2-secret '通信密钥' --p
 ### 安装之后
 
 1. 浏览器打开脚本打印的地址，进入控制台。需要英文界面时点右上角 **EN / 中文**。
-2. **设置 → Cloudflare Worker 中转**：用「凭据与权限」里的 Cloudflare Token 一键部署中继（只用于部署，不会写进 Agent）。也可按 `c2/web-controller/cloudflare-worker/README.md` 手动 wrangler。
-3. **生成器**选「双通道」，确认 Worker 三件套，再填**最小权限**的 GitHub 备用 Token / 仓库（此 Token 会编进 Agent）。点编译，下载二进制。
+2. **设置 → Cloudflare Worker 中转**：用「凭据与权限」里的 Cloudflare Token 一键部署中继（只用于部署，不会写进 Agent）。不想用一键：按 [WORKER.md](WORKER.md) 在网页或 wrangler 手动搭，再手填 URL / Secret / Path（Path 是 URL 第一段，不是密码）。
+3. **生成器**选「双通道」，确认 Worker **三件套**（URL、Secret、Path 和设置页一致），再填**最小权限**的 GitHub 备用 Token / 仓库（此 Token 会编进 Agent）。点编译，下载二进制。
 4. 在授权目标机运行 Agent。侧栏出现一条记录，通道徽章为 Worker + GitHub。
 5. 先在终端发一条无害命令确认回显，再使用 Shell / 文件 / 隧道等页。
 
