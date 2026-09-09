@@ -1,0 +1,32 @@
+# 构建产物 / 运行态 — 禁止入库
+c2-bundle.tar.gz
+**/target/
+**/venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/*.db
+**/*.db-*
+**/.runtime.env
+**/downloads/
+**/notebooks/
+**/Library/
+**/logs/
+**/.rollback-*
+*.log
+*.tmp
+*.bak
+.DS_Store
+.idea/
+.vscode/
+
+# 本机密钥与环境（即使误放进目录也不提交）
+.env
+.env.*
+!.env.example
+*credentials*
+*secret*.json
+id_rsa
+id_ed25519
+*.pem
+*.p12

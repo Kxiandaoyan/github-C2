@@ -1,0 +1,13 @@
+name = "c2relay"
+main = "worker.js"
+# 与控制台一键部署卡片发送的 metadata 保持一致（app.py worker_admin/deploy）
+compatibility_date = "2024-09-01"
+
+# Fill in after:  wrangler d1 create c2relay
+[[d1_databases]]
+binding = "DB"
+database_name = "c2relay"
+database_id = "REPLACE_WITH_YOUR_D1_ID"
+
+[triggers]  # hourly trim: keep newest 500 comments per agent, clear stale agents
+crons = ["0 * * * *"]

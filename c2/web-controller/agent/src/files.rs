@@ -1,0 +1,73 @@
+use serde::Serialize;
+use std::fs;
+
+#[derive(Serialize)]
+struct FileEntry {
+    name: String,
+    is_dir: bool,
+    size: u64,
+}
+
+pub fn list_files(path: &str) -> String {
+    #[cfg(windows)]
+    if path.is_empty() || path == "DRIVES" {
+        return list_drives();
+    }
+
+    #[cfg(unix)]
+    let path = if path.is_empty() {
+        "/"
+    } else if !path.starts_with('/') {
+        return match std::env::current_dir() {
+            Ok(cwd) => list_files(&cwd.join(path).to_string_lossy()),
+            Err(_) => "Error: Cannot get current directory".to_string(),
+        };
+    } else {
+        path
+    };
+
+    match fs::read_dir(path) {
+        Ok(entries) => {
+            let mut items = Vec::new();
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                let is_dir = path.is_dir();
+                let size = if is_dir {
+                    0
+                } else {
+                    fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+                };
+                items.push(FileEntry {
+                    name: name.to_string(),
+                    is_dir,
+                    size,
+                });
+            }
+            match serde_json::to_string(&items) {
+                Ok(json) => format!("[FILES_JSON]\n{}", json),
+                Err(e) => format!("Error: {}", e),
+            }
+        }
+        Err(e) => format!("Error: {}", e),
+    }
+}
+
+#[cfg(windows)]
+fn list_drives() -> String {
+    let mut items = Vec::new();
+    for letter in b'A'..=b'Z' {
+        let drive = format!("{}:\\", letter as char);
+        if std::path::Path::new(&drive).exists() {
+            items.push(FileEntry {
+                name: drive,
+                is_dir: true,
+                size: 0,
+            });
+        }
+    }
+    match serde_json::to_string(&items) {
+        Ok(json) => format!("[FILES_JSON]\n{}", json),
+        Err(e) => format!("Error: {}", e),
+    }
+}
