@@ -27,11 +27,77 @@ Payloads between the console and the agent are always **AES-256-GCM envelopes**.
 These are the parts that are actually different from a “GitHub-as-the-only-channel” tool:
 
 - **Your own relay; GitHub is only the spare.** One-click Cloudflare Worker + D1. If the primary dies the agent **fails over to GitHub**; when the relay is healthy it **fails back**. The terminal shows a `[Channel]` notice. Dual-channel still appears as **one** sidebar row.
+- **Automatic privilege escalation at startup.** If it is not root yet, it tries passwordless sudo, existing SUID interpreters, unpatched pkexec, then a privileged-container escape. On success it **exec-replaces itself** — no twin process. Fileless mode skips the whole chain so nothing is written to disk.
+- **Process-level stealth, no kernel module.** It disguises as a distro daemon, hides the path and `/proc`, aligns SELinux/AppArmor, and restores timestamps after writes.
+- **Multi-hook persistence that heals.** systemd / cron / rc.local / profile / user services go in together. If one hook is wiped, it puts it back about every 6 hours.
 - **Time window.** The agent talks only in the hours you set. Outside the window the panel shows **Quiet**, not offline. Window edges jitter per agent per day so the fleet does not wake as one pulse. **Kill still works after hours.**
-- **Fully automatic poll heat.** You set one base interval. The agent speeds up when someone is operating and slows down when idle. No manual day/night profile.
+- **Fully automatic poll heat.** You set one base interval. The agent speeds up when someone is operating and slows down when idle — saves quota and drops the fixed-beat fingerprint.
 - **Rotate a dead token without rebuilding.** Fill Backup URL; the agent fetches a new JSON config and restarts itself.
 - **Little or nothing written on the target.** Reverse shell and the tunnel node are built into the agent and stay in memory. You can also check in **fileless** via memfd.
 - **Everything on the wire is encrypted.** The console ships **Chinese / English language packs** (top-right **EN / 中文**).
+
+### Stealth, privilege, performance, and stability
+
+#### Automatic privilege escalation
+
+On Linux, if the process is not root yet, it tries **before** daemonizing (and only if the environment allows it — otherwise it keeps running as the current user):
+
+1. **Passwordless sudo:** if `sudo -n` works it re-execs itself as root; otherwise it scans `sudo -l` for NOPASSWD interpreters.
+2. **Existing SUID interpreters** that are already root SUID on the host.
+3. **Unpatched pkexec** (CVE-2021-4034, x86_64 only).
+4. **Privileged container:** if it sees privileged / `CAP_SYS_ADMIN`, it tries a cgroup v1 escape to the host.
+
+On success it **exec-replaces the current process** so you never get two agents. A guard env var stops a loop after a successful elevate. **memfd fileless mode skips the whole chain** (re-execing itself would break the fileless contract and leave failed attempts in logs).
+
+#### Stealth
+
+All of this is **process-level**. No kernel module, no lock-in to a kernel build:
+
+- **Process / thread names:** `comm` is auto-picked per distro (`polkitd` / `accounts-daemon` / `systemd-udevd`, …); worker threads look like `kworker`. You can also set a name at build time.
+- **Install path:** root prefers something that looks like a systemd helper under `/usr/lib/systemd/…`; a normal user uses `~/.local/bin/`. Write permission is probed with `access(2)` — no create-then-delete probe that trips file monitors.
+- **Hide `/proc`:** bind-mount `/proc/<pid>` over PID 1’s view so a casual `ps` / cwd / fd listing does not line up.
+- **SELinux / AppArmor:** `chcon` to `bin_t` / unit-file context so audit logs are not flooded with “unknown file”.
+- **Timestamps:** binary and state-file mtimes are cloned from real system files; each write restores the directory mtime (`stealth_write`).
+- **Traffic shape:** startup jitter, ±20% poll jitter, per-agent per-day window edges; GitHub calls rotate common client User-Agents.
+- **No secrets on crash:** coredumps are disabled so a Token / Secret is not written to disk.
+- **Guards:** hostname, user, marker file, minimum RAM — mismatch **exits silently** so a sandbox / honeypot sees less behaviour.
+
+#### Performance
+
+- The agent is **Rust**. Prefer `x86_64-unknown-linux-musl` (**static**) so the target needs no runtime libs.
+- **Primary traffic is your own Worker HTTPS** — it does not burn GitHub rate limits or wait on Issue refresh. GitHub only comes in when the primary is down.
+- **Reverse shell is a real PTY over WebSocket**, not the 30-second command poll.
+- **Automatic hot/warm/cold polling:** as fast as 15 seconds when you are operating, as slow as 5 minutes when idle. Saves API quota and drops a fixed heartbeat.
+- Large files go through the **sendit relay**; uploads are chunked so comments are not used as a dump.
+- The console already ships the tunnel server and the reverse-shell server. **You do not download a pile of companion binaries.**
+
+#### Stability
+
+- Dual-channel: **a failed failover notice rolls back**, so the console and the agent do not listen on different paths.
+- If D1 is rebuilt and AUTOINCREMENT resets, the **watermark resets itself** instead of the fleet going deaf.
+- The same command is written to the sibling channel; the agent **deduplicates**, so a switch does not drop the order.
+- Persistence is multi-hook; about **every 6 hours it checks and repairs** a wiped hook.
+- Daemonize is **spawn + exec**, not `fork()`: forking a Tokio multi-thread runtime deadlocks on old CentOS kernels.
+- Backoff is by error class (auth / rate limit / network) plus jitter, not a fixed hammer.
+- Live upgrade **keeps agent id and channel identity**; a failed upgrade leaves the old process running.
+- Empty Settings fields **do not overwrite** stored secrets; GET never returns a full Secret.
+
+#### Pain points
+
+| Usual pain | What this does |
+|---|---|
+| GitHub-only: slow, tight rate limits, dirty Issue comments | **Worker is primary**; GitHub is only the spare |
+| Dual-channel shows up as two agents you cannot reconcile | **One sidebar row**, two badges |
+| Token expires and the whole fleet is dead; rebuild everything | **Backup URL** pulls new JSON and hot-restarts |
+| After hours it looks “offline”; you cannot tell dead from quiet | The panel shows **Quiet**, not offline |
+| Relay DB rebuilt, watermarks wrong, nobody takes new commands | **Stale watermark auto-resets** |
+| Failover splits the console and the agent onto different paths | `[Channel]` notice failure **rolls back** |
+| Blue team deletes one startup hook and it is gone | **Multi-hook persistence + 6-hour self-heal** |
+| User-level agent cannot do much | **Auto-escalate at startup** (only if the host allows it) |
+| Extra shell / tunnel binaries litter the target | **Built into the agent, in memory**; memfd fileless if you want |
+| Saving Settings with empty fields wipes secrets | **Empty does not overwrite**; the browser never gets the full Secret |
+| The fleet checks in on the same second; traffic looks like a heartbeat | **Startup jitter + per-day per-agent window skew + poll jitter** |
+| Large files cannot ride comments / blow the channel up | **sendit relay + chunked upload** |
 
 ### Architecture
 
@@ -71,9 +137,10 @@ mindmap
       MCP
       Settings
     Agent
-      Encrypted comms
+      Auto privilege
+      Process-level stealth
+      Multi-hook persist
       Time window
-      Process disguise
       Fileless exec
       Live upgrade / uninstall
 ```
