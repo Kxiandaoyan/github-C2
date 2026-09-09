@@ -1274,6 +1274,175 @@ class TestConsoleBackup(unittest.TestCase):
         self.assertIn("attachment", r.headers.get("Content-Disposition", "").lower())
 
 
+class TestWsShellOneShot(unittest.TestCase):
+    """cliws `-b` is one-shot: leftover wspty must be closed before the next pair."""
+
+    def test_connect_recycles_bridge_then_sends_close_and_wspty(self):
+        client = app.app.test_client()
+        with client.session_transaction() as sess:
+            sess["logged_in"] = True
+        with app._cliws_lock:
+            prev = dict(app._cliws_session)
+            app._cliws_session.clear()
+            app._cliws_session.update({
+                "port": 7337,
+                "ctrl_ip": "1.2.3.4",
+                "bound_agent_id": "42",
+                "bound_sibling_ids": ["42"],
+            })
+        orig_start = app._cliws_start
+        orig_send = app._internal_send
+        sent = []
+        started = []
+        try:
+            def fake_start(ctrl_ip, port):
+                started.append((ctrl_ip, port))
+                app._cliws_session.update({
+                    "port": port,
+                    "ctrl_ip": ctrl_ip,
+                    "bound_agent_id": None,
+                    "bound_sibling_ids": [],
+                })
+                return True, {"ok": True, "port": port, "tmux_session": "c2-cliws-7337"}
+
+            def fake_send(aid, cmd):
+                sent.append((str(aid), cmd))
+                return True, "cmd-x"
+
+            app._cliws_start = fake_start
+            app._internal_send = fake_send
+            r = client.post("/api/wsshell/connect", json={
+                "agent_id": "42",
+                "controller_ip": "1.2.3.4",
+                "controller_port": "7337",
+            })
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(started, [("1.2.3.4", 7337)])
+            self.assertGreaterEqual(len(sent), 2)
+            self.assertEqual(sent[0], ("42", "wspty:close"))
+            self.assertTrue(sent[-1][1].startswith("wspty ws://1.2.3.4:7337/"))
+            body = r.get_json()
+            self.assertTrue(body.get("recycled"))
+        finally:
+            app._cliws_start = orig_start
+            app._internal_send = orig_send
+            with app._cliws_lock:
+                app._cliws_session.clear()
+                app._cliws_session.update(prev)
+
+    def test_proxy_end_always_sends_close(self):
+        path = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "app.py")
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        fn = src[src.find("def wsshell_ws_proxy"):src.find("def api_wspty_sessions")]
+        self.assertIn('_internal_send(agent_id, "wspty:close")', fn)
+        self.assertNotIn("browser closed but cliws still running", fn)
+
+    def test_frontend_does_not_auto_open_on_stale_bound(self):
+        path = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "static", "js", "app.js")
+        with open(path, encoding="utf-8") as fh:
+            js = fh.read()
+        self.assertIn("expectOpen", js)
+        self.assertIn("WSSHELL.expectOpen && !WSSHELL.connected", js)
+        self.assertIn("已重建桥接并下发反弹", js)
+
+    def test_ui_documents_oneshot_flow(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "templates", "index.html"), encoding="utf-8") as fh:
+            html = fh.read()
+        self.assertIn("wsshell.oneshot_hint", html)
+
+    def test_connect_rolls_back_cliws_if_wspty_send_fails(self):
+        client = app.app.test_client()
+        with client.session_transaction() as sess:
+            sess["logged_in"] = True
+        orig_start = app._cliws_start
+        orig_send = app._internal_send
+        orig_stop = app._cliws_stop
+        stopped = []
+        try:
+            app._cliws_start = lambda ip, port: (True, {"ok": True, "port": port})
+
+            def fake_send(aid, cmd):
+                if str(cmd).startswith("wspty "):
+                    return False, "channel down"
+                return True, "cmd-x"
+
+            app._internal_send = fake_send
+            app._cliws_stop = lambda: stopped.append(True)
+            r = client.post("/api/wsshell/connect", json={
+                "agent_id": "42",
+                "controller_ip": "1.2.3.4",
+                "controller_port": "7337",
+            })
+            self.assertEqual(r.status_code, 500)
+            self.assertTrue(stopped)
+        finally:
+            app._cliws_start = orig_start
+            app._internal_send = orig_send
+            app._cliws_stop = orig_stop
+
+    def test_frontend_hydrates_ip_and_checks_sendraw(self):
+        path = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "static", "js", "app.js")
+        with open(path, encoding="utf-8") as fh:
+            js = fh.read()
+        self.assertIn("_wsshellHydrateConfig", js)
+        self.assertIn("if (!r.ok || d.error)", js)
+
+    def test_agent_does_not_reconnect_after_live_bridge(self):
+        path = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "agent", "src", "ws_pty.rs")
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn("waiting for a new wspty command", src)
+        self.assertNotIn("disconnected, will retry", src)
+
+
+class TestDecryptWatermark(unittest.TestCase):
+    AID = "unittest-wm-hold"
+
+    def setUp(self):
+        conn = app._conn()
+        conn.execute("DELETE FROM processed_comments WHERE agent_id=?", (self.AID,))
+        conn.execute("DELETE FROM last_comment_times WHERE agent_id=?", (self.AID,))
+        conn.execute("DELETE FROM messages WHERE agent_id=?", (self.AID,))
+        conn.commit()
+        with app._lock:
+            app._state["last_times"][self.AID] = "5"
+            app._state.setdefault("decrypt_fails", {}).pop(self.AID, None)
+
+    def tearDown(self):
+        conn = app._conn()
+        conn.execute("DELETE FROM processed_comments WHERE agent_id=?", (self.AID,))
+        conn.execute("DELETE FROM last_comment_times WHERE agent_id=?", (self.AID,))
+        conn.execute("DELETE FROM messages WHERE agent_id=?", (self.AID,))
+        conn.commit()
+        with app._lock:
+            app._state["last_times"].pop(self.AID, None)
+            app._state.setdefault("decrypt_fails", {}).pop(self.AID, None)
+
+    def test_failed_decrypt_does_not_skip_over_later_success(self):
+        import json
+        import crypto
+        pw = "unit-test-wm"
+        good = crypto.encrypt(json.dumps({
+            "content": "pong-wm",
+            "response_to": "cmd-wm",
+            "message_type": "output",
+        }), pw)
+        comments = [
+            {"id": "10", "body": "<!-- r -->not-a-valid-blob", "updated_at": "10"},
+            {"id": "20", "body": f"<!-- r -->{good}", "updated_at": "20"},
+        ]
+        agent = {"id": self.AID, "channel": "worker", "repo": "t/t"}
+        app._process_comments(agent, comments, pw)
+        self.assertEqual(app._state["last_times"].get(self.AID), "5")
+        self.assertEqual(app.db.cursor_get(app._conn(), self.AID), None)
+
+
 class TestScheduleUiPresent(unittest.TestCase):
     def test_schedule_tab_and_commands(self):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

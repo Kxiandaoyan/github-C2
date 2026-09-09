@@ -5,8 +5,11 @@
 /// Design guarantees:
 ///   1. Only ONE instance at a time (WS_PTY_ACTIVE atomic flag).
 ///   2. Runs in a plain OS thread (std::thread) — never blocks tokio runtime.
-///   3. bash process is independent of WS transport; WS can reconnect.
-///   4. Retries up to MAX_RETRIES (60) times with RETRY_DELAY (10s) between attempts.
+///   3. bash process is independent of WS transport while the *same* WS is up.
+///   4. Connect failures retry (MAX_RETRIES / RETRY_DELAY). After a session has
+///      actually bridged, do **not** auto-reconnect: cliws `-b` is one-shot
+///      (agent + proxy pair). Reconnecting poisons the next browser session
+///      (connects, then both sides close in ~1ms, no data).
 ///   5. PTY fd ownership: master_fd kept alive by run_session across retries;
 ///      each bridge_pty_ws call receives a fresh dup() for its reader thread,
 ///      and a shared dup() for the writer — avoids double-close UB.
@@ -104,22 +107,37 @@ pub fn request_stop() {
 /// Intended to be called via std::thread::spawn — never blocks tokio runtime.
 #[cfg(unix)]
 pub fn start(ws_url: String) -> String {
-    // Enforce single-instance: swap returns old value
+    // A second `wspty` (new browser session) must replace the old one.
+    // cliws is one-shot: leaving the old reconnect loop running makes the
+    // next pair connect-and-die with no PTY data.
     if WS_PTY_ACTIVE.swap(true, Ordering::SeqCst) {
-        crate::debug_log("WS PTY: start() rejected — session already active");
-        return "WS PTY already active (only one session per agent)".to_string();
+        crate::debug_log("WS PTY: start() while active — stopping previous session");
+        request_stop();
+        for _ in 0..50 {
+            if !WS_PTY_ACTIVE.load(Ordering::SeqCst) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        if WS_PTY_ACTIVE.swap(true, Ordering::SeqCst) {
+            crate::debug_log("WS PTY: start() rejected — previous session did not unwind");
+            return "WS PTY already active (only one session per agent)".to_string();
+        }
     }
     crate::debug_log(&format!("WS PTY: starting session url={}", ws_url));
     WS_PTY_STOP.store(false, Ordering::Relaxed);
     BASH_PID.store(-1, Ordering::Relaxed);
-    SESSION_GEN.fetch_add(1, Ordering::Relaxed);
+    let my_gen = SESSION_GEN.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
 
     let result = run_session(&ws_url);
 
-    // Always clean up flags on exit
-    BASH_PID.store(-1, Ordering::Relaxed);
-    WS_PTY_ACTIVE.store(false, Ordering::Relaxed);
-    WS_PTY_STOP.store(false, Ordering::Relaxed);
+    // Only the current generation may clear the flags — a replacement
+    // start() may already have claimed WS_PTY_ACTIVE.
+    if SESSION_GEN.load(Ordering::SeqCst) == my_gen {
+        BASH_PID.store(-1, Ordering::Relaxed);
+        WS_PTY_ACTIVE.store(false, Ordering::SeqCst);
+        WS_PTY_STOP.store(false, Ordering::Relaxed);
+    }
     crate::debug_log(&format!("WS PTY: session closed, result={}", result));
     result
 }
@@ -381,8 +399,11 @@ fn run_session(ws_url: &str) -> String {
             crate::debug_log("WS PTY: stop flag set after bridge returned, not retrying");
             break;
         }
-        // WS dropped by controller → retry
-        crate::debug_log("WS PTY: disconnected, will retry");
+        // Connected once: do not auto-reconnect. cliws `-b` pairs one agent
+        // socket with one proxy socket; a silent reconnect occupies the
+        // next slot and the following browser session gets a dead pipe.
+        crate::debug_log("WS PTY: peer closed after a live session — waiting for a new wspty command");
+        break;
     }
 
     // ── Clean up ─────────────────────────────────────────────────────────────

