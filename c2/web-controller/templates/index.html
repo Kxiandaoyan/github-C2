@@ -66,6 +66,7 @@
   <main id="main">
     <nav id="tab-bar">
       <button class="tab-btn active" data-tab="terminal" data-i18n="nav.terminal">⌨ 终端</button>
+      <button class="tab-btn" data-tab="schedule">⏱ 定时</button>
       <button class="tab-btn" data-tab="wsshell" data-i18n="nav.wsshell">🖥 反弹Shell</button>
       <button class="tab-btn" data-tab="files" data-i18n="nav.files">📁 文件</button>
       <button class="tab-btn" data-tab="tunnel" data-i18n="nav.tunnel">🔗 隧道</button>
@@ -177,6 +178,59 @@
             <div id="cmd-history-drop" style="display:none;position:absolute;bottom:calc(100% + 6px);right:0;width:340px;max-height:260px;overflow:auto;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.45);z-index:500"></div>
           </div>
           <button class="btn-primary" onclick="sendCommand()">Send</button>
+        </div>
+      </div>
+
+      <!-- Schedule (agent-internal; no crontab on the target) -->
+      <div class="tab-panel" id="panel-schedule">
+        <div class="panel-toolbar">
+          <div class="toolbar-left">
+            <span class="panel-title">⏱ 定时任务</span>
+            <span id="sched-agent-indicator" class="agent-indicator"></span>
+          </div>
+          <div class="toolbar-right">
+            <button class="btn-sm" onclick="scheduleRefresh()">🔄 刷新列表</button>
+            <button class="btn-sm btn-danger" onclick="scheduleClear()">🗑 清空全部</button>
+          </div>
+        </div>
+        <div style="flex:1;overflow:auto;padding:16px 20px;display:flex;flex-direction:column;gap:14px">
+          <div style="background:var(--bg-2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;font-size:12px;line-height:1.7;color:var(--text-1)">
+            这是 <b>Agent 内置调度</b>，不在目标机写 crontab。任务存在 Agent 本机，重启后仍在（无文件模式只在本次进程有效）。
+            到期后自动跑命令，回显出现在<strong>终端</strong>。间隔 <code>10</code> 秒～<code>7</code> 天。
+            控制台没有单独后台队列——点下面的按钮等于向当前 Agent 发送 <code>schedule …</code> 命令。
+          </div>
+          <div class="settings-grid" style="max-width:720px">
+            <label>间隔：</label>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <input type="number" id="sch-interval" value="60" min="1" style="width:90px">
+              <select id="sch-unit" style="width:90px">
+                <option value="s">秒</option>
+                <option value="m" selected>分钟</option>
+                <option value="h">小时</option>
+              </select>
+              <button class="btn-sm" onclick="schedulePreset(60,'s')">1 分钟</button>
+              <button class="btn-sm" onclick="schedulePreset(5,'m')">5 分钟</button>
+              <button class="btn-sm" onclick="schedulePreset(1,'h')">1 小时</button>
+              <button class="btn-sm" onclick="schedulePreset(24,'h')">每天</button>
+            </div>
+            <label>命令：</label>
+            <input type="text" id="sch-cmd" placeholder="例如：id    或    cat /etc/hostname" style="font-family:var(--mono);font-size:12px">
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn-action btn-success" onclick="scheduleAdd()">＋ 添加周期任务</button>
+            <button class="btn-sm" onclick="scheduleRefresh()">📋 列出任务</button>
+          </div>
+          <div>
+            <div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:6px">Agent 回显</div>
+            <pre id="sch-result" class="mono-output" style="min-height:140px;margin:0;padding:12px;white-space:pre-wrap;word-break:break-all">打开本页会自动发送 schedule ls。回显到来后显示在这里，同时也会进终端。</pre>
+          </div>
+          <div style="font-size:11px;color:var(--text-muted);line-height:1.6">
+            删除某条：先刷新看到 <code>#id</code>，再在下面填编号。
+            <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+              <input type="number" id="sch-rm-id" min="1" placeholder="任务 #id" style="width:110px">
+              <button class="btn-sm btn-danger" onclick="scheduleRm()">删除这条</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1028,9 +1082,13 @@
             <input type="text" id="s-webuser" placeholder="Set login username" autocomplete="off">
           </div>
 
-          <div style="padding:0 24px;display:flex;gap:10px;margin-top:4px">
+          <div style="padding:0 24px;display:flex;gap:10px;margin-top:4px;flex-wrap:wrap;align-items:center">
             <button class="btn-sm btn-primary" onclick="saveSettings()">💾 保存并连接</button>
             <button class="btn-sm" onclick="refreshAgents()">🔄 刷新列表</button>
+            <button class="btn-sm btn-success" id="btn-console-backup" onclick="downloadConsoleBackup()" title="打包数据库、资料库笔记、运行时设置并弹出下载">⬇ 一键备份下载</button>
+          </div>
+          <div style="padding:6px 24px 0;font-size:11px;color:var(--text-muted);line-height:1.6">
+            备份包含控制台数据库（Agent / 备注 / 消息 / 设置 / 生成器配置 / 审计）、<code>downloads/</code> 资料库笔记与文件、以及 <code>.runtime.env</code>（若有）。<b>压缩包里有密钥</b>，请离线保存，不要提交仓库。
           </div>
           <!-- Kill Switch 已按需求移除（防误触全灭）。MCP 的 killswitch 工具仍可用，
                且需要显式 confirm 确认串，属多步刻意操作。 -->

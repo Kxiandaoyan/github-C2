@@ -24,9 +24,12 @@ import signal as _signal
 import os
 import queue
 import re
+import sqlite3
+import tempfile
 import threading
 import time
 import uuid
+import zipfile
 import mimetypes
 import requests as _requests   # for sendit.sh background download
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -42,8 +45,9 @@ logging.basicConfig(level=logging.INFO,
 def debug_log(msg: str) -> None:
     _C2_LOGGER.debug(msg)
 
-from flask import (Flask, Response, jsonify, redirect, render_template,
-                   request, send_file, session, url_for, has_request_context)
+from flask import (Flask, Response, after_this_request, jsonify, redirect,
+                   render_template, request, send_file, session, url_for,
+                   has_request_context)
 from werkzeug.utils import secure_filename
 
 import crypto
@@ -2500,6 +2504,108 @@ def api_settings():
         if wp:
             db.cfg_set(conn_s, "builder_worker_path", wp)
     return jsonify({"ok": True})
+
+
+def _runtime_env_path() -> str:
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        ".runtime.env")
+
+
+def build_console_backup(zpath: str) -> dict:
+    """Pack the console DB, Library downloads, and .runtime.env into zpath.
+
+    The archive contains secrets (tokens, decrypt password, web login).
+    """
+    created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    files = []
+    skipped = []
+    with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as zf:
+        tmpdb = zpath + ".sqlite"
+        try:
+            src = sqlite3.connect(db.DB_PATH)
+            dst = sqlite3.connect(tmpdb)
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+                src.close()
+            zf.write(tmpdb, "c2_web.db")
+            files.append("c2_web.db")
+        except Exception as e:
+            skipped.append(f"c2_web.db ({e})")
+        finally:
+            try:
+                os.remove(tmpdb)
+            except OSError:
+                pass
+
+        if os.path.isdir(DOWNLOADS_DIR):
+            for root, dirs, names in os.walk(DOWNLOADS_DIR):
+                dirs[:] = [d for d in dirs if d not in ("__pycache__",)]
+                for name in names:
+                    full = os.path.join(root, name)
+                    rel = os.path.relpath(full, DOWNLOADS_DIR).replace(os.sep, "/")
+                    arc = f"downloads/{rel}"
+                    try:
+                        zf.write(full, arc)
+                        files.append(arc)
+                    except OSError as e:
+                        skipped.append(f"{arc} ({e})")
+
+        envp = _runtime_env_path()
+        if os.path.isfile(envp):
+            try:
+                zf.write(envp, "runtime.env")
+                files.append("runtime.env")
+            except OSError as e:
+                skipped.append(f"runtime.env ({e})")
+
+        readme = (
+            "GitHub C2 console backup\n"
+            f"created_utc: {created}\n\n"
+            "Contents:\n"
+            "- c2_web.db     SQLite: agents, notes, messages, settings, builder, audit\n"
+            "- downloads/    Library notes and files (per agent)\n"
+            "- runtime.env   deploy-time web login / channel secret (if present)\n\n"
+            "THIS ZIP CONTAINS SECRETS. Keep it offline. Do not commit it.\n"
+        )
+        if skipped:
+            readme += "\nSkipped:\n- " + "\n- ".join(skipped) + "\n"
+        zf.writestr("README.txt", readme)
+        files.append("README.txt")
+    return {"created": created, "files": files, "skipped": skipped}
+
+
+@app.route("/api/backup")
+@login_required
+def api_backup():
+    fd, zpath = tempfile.mkstemp(prefix="c2-backup-", suffix=".zip")
+    os.close(fd)
+    try:
+        build_console_backup(zpath)
+    except Exception as e:
+        try:
+            os.remove(zpath)
+        except OSError:
+            pass
+        return jsonify({"error": f"backup failed: {e}"}), 500
+
+    name = datetime.now(timezone.utc).strftime("c2-backup-%Y%m%d-%H%M%S.zip")
+
+    @after_this_request
+    def _cleanup(resp):
+        try:
+            os.remove(zpath)
+        except OSError:
+            pass
+        return resp
+
+    return send_file(
+        zpath,
+        as_attachment=True,
+        download_name=name,
+        mimetype="application/zip",
+    )
 
 
 @app.route("/api/audit")

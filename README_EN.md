@@ -126,6 +126,7 @@ mindmap
       Automatic failover
     Console features
       Terminal
+      Schedule
       Reverse shell
       Files
       Tunnel
@@ -225,6 +226,15 @@ A real command line in the page, not a fake log pane.
 - Up / down for local input history; the history dropdown can resend.
 - **Clear history**: wipe this agent’s console session (old channel comments still need “Clear channel messages”).
 - Buffer cap is 500 chunks so huge output cannot blow up the page.
+
+#### Schedule
+
+The agent has a **built-in scheduler**. It does not write crontab on the target. Use the top-bar **⏱ Schedule** tab (there was no panel before — only raw terminal commands).
+
+- Select an agent → interval + command → **Add**. Interval: 10 seconds to 7 days.
+- **List / remove / clear** send `schedule ls` / `rm` / `clear`. The reply shows on this page and in the terminal.
+- When due, the agent runs the command and returns output on the normal channel. Tasks survive reboot (memfd fileless: this process only).
+- You can still type in the terminal: `schedule add 3600 id`, `schedule ls`, `schedule rm 1`, `schedule clear`.
 
 #### Reverse shell
 
@@ -405,6 +415,7 @@ The on-page kill button was removed from Settings to prevent wiping the fleet by
 - **Web username / password**: console login; survives restart.
 - **One-click Worker deploy**: paste a **Cloudflare API Token** (relay deploy only — never baked into the agent). Creates D1, applies schema, uploads the Worker, writes `C2_AUTH` + `PATH_SECRET`, attaches hourly cleanup, enables workers.dev, and writes the triple into Settings / Builder (the first time it may promote an empty GitHub profile to dual; later it leaves your profile alone). Permissions: see Credentials and permissions. **To build the relay yourself without giving the console a token, follow [WORKER_EN.md](WORKER_EN.md).**
 - **Audit log**: who did what, to which agent, when.
+- **One-click backup download**: packs the console database (agents / notes / messages / settings / builder / audit), Library notes and files, and `.runtime.env` if present, then the browser downloads the zip. **The archive contains secrets** — keep it offline; do not commit it.
 
 Saving empty tokens or passwords does not wipe stored secrets. Settings GET responses never return full secrets to the browser.
 

@@ -3,6 +3,8 @@
 window.LANG_EN = {
   // ═══ Navigation ═══
   "终端": "Terminal", "文件管理": "Files", "文件": "Files",
+  "定时": "Schedule", "定时任务": "Scheduled Tasks",
+  "一键备份下载": "Download backup",
   "系统信息": "SysInfo", "资料库": "Library", "报告": "Report",
   "升级": "Upgrade", "隧道": "Tunnel", "扫描": "Scan", "设置": "Settings",
   "生成器": "Builder", "反弹Shell": "Rev Shell",

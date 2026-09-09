@@ -9,8 +9,10 @@ Run:  python -m unittest discover -s tests   (from web-controller/)
 """
 import os
 import sys
+import tempfile
 import time
 import unittest
+import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("SECRET_KEY", "unit-test-secret")
@@ -1234,6 +1236,55 @@ class TestRound12Ops(unittest.TestCase):
             src = fh.read()
         self.assertIn("return 0, False", src)
         self.assertNotIn("treat as attempted", src)
+
+
+class TestConsoleBackup(unittest.TestCase):
+    def test_unauthenticated_is_401(self):
+        client = app.app.test_client()
+        r = client.get("/api/backup")
+        self.assertEqual(r.status_code, 401)
+
+    def test_zip_contains_db_and_readme(self):
+        fd, zpath = tempfile.mkstemp(suffix=".zip")
+        os.close(fd)
+        try:
+            info = app.build_console_backup(zpath)
+            self.assertIn("c2_web.db", info["files"])
+            self.assertIn("README.txt", info["files"])
+            with zipfile.ZipFile(zpath) as zf:
+                names = zf.namelist()
+                self.assertIn("c2_web.db", names)
+                self.assertIn("README.txt", names)
+                text = zf.read("README.txt").decode("utf-8")
+                self.assertIn("SECRETS", text)
+        finally:
+            try:
+                os.remove(zpath)
+            except OSError:
+                pass
+
+    def test_authenticated_download(self):
+        client = app.app.test_client()
+        with client.session_transaction() as sess:
+            sess["logged_in"] = True
+        r = client.get("/api/backup")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("zip", (r.mimetype or "").lower())
+        self.assertGreater(len(r.data), 32)
+        self.assertIn("attachment", r.headers.get("Content-Disposition", "").lower())
+
+
+class TestScheduleUiPresent(unittest.TestCase):
+    def test_schedule_tab_and_commands(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "templates", "index.html"), encoding="utf-8") as fh:
+            html = fh.read()
+        self.assertIn('data-tab="schedule"', html)
+        self.assertIn("panel-schedule", html)
+        with open(os.path.join(root, "static", "js", "app.js"), encoding="utf-8") as fh:
+            js = fh.read()
+        self.assertIn("schedule add", js)
+        self.assertIn("downloadConsoleBackup", js)
 
 
 if __name__ == "__main__":

