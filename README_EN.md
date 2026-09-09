@@ -20,7 +20,18 @@ GitHub C2 has three parts:
 | **Agent** | Written in Rust, runs on the target. Polls for commands, returns encrypted output, can persist and disguise itself. |
 | **Channels** | Move commands and replies. Primary is Cloudflare Worker + D1; backup is GitHub Issues. You can also use Notion alone, or any single channel. |
 
-Payloads between the console and the agent are always AES-256-GCM envelopes. The relay database does not store plaintext host identity. If one machine is on both Worker and GitHub, the sidebar shows a single row, not two agents.
+Payloads between the console and the agent are always **AES-256-GCM envelopes**. The relay database **does not store plaintext host identity**. If one machine is on both Worker and GitHub, the sidebar shows **a single row**, not two agents.
+
+### Highlights
+
+These are the parts that are actually different from a “GitHub-as-the-only-channel” tool:
+
+- **Your own relay; GitHub is only the spare.** One-click Cloudflare Worker + D1. If the primary dies the agent **fails over to GitHub**; when the relay is healthy it **fails back**. The terminal shows a `[Channel]` notice. Dual-channel still appears as **one** sidebar row.
+- **Time window.** The agent talks only in the hours you set. Outside the window the panel shows **Quiet**, not offline. Window edges jitter per agent per day so the fleet does not wake as one pulse. **Kill still works after hours.**
+- **Fully automatic poll heat.** You set one base interval. The agent speeds up when someone is operating and slows down when idle. No manual day/night profile.
+- **Rotate a dead token without rebuilding.** Fill Backup URL; the agent fetches a new JSON config and restarts itself.
+- **Little or nothing written on the target.** Reverse shell and the tunnel node are built into the agent and stay in memory. You can also check in **fileless** via memfd.
+- **Everything on the wire is encrypted.** The console ships **Chinese / English language packs** (top-right **EN / 中文**).
 
 ### Architecture
 
@@ -149,10 +160,10 @@ A real command line in the page, not a fake log pane.
 
 #### Reverse shell
 
-A real PTY over WebSocket. It does not wait for the 30-second poll.
+A **real PTY** over WebSocket. It **does not wait for the 30-second poll**.
 
 - **Server side**: bundled `cliws` on the console host, default port `7337`. Click Start server — no extra download.
-- **Target side**: built-in `wspty` in the agent. Click Start target bounce; no extra file on the target.
+- **Target side**: **built-in** `wspty` in the agent. Click Start target bounce; **no extra file on the target**.
 - Once connected, the page is an xterm you can type into.
 - Controller IP / port are editable (the address the agent dials; open the firewall).
 - Past sessions can be reviewed, then you return to live.
@@ -175,7 +186,7 @@ Remote directory browser.
 Internal SOCKS5, based on Stowaway.
 
 - **Server side**: bundled `stowaway_admin` on the console. Set listen port (default 9998) and SOCKS5 port (default 1080), then Start server.
-- **Target side**: in-memory tunnel node in the agent, no file on disk. Fill callback IP / port / Secret, then Start target tunnel.
+- **Target side**: **in-memory tunnel node in the agent, no file on disk**. Fill callback IP / port / Secret, then Start target tunnel.
 - Point a browser or proxy at `127.0.0.1:<SOCKS port>` to use the target as a hop into its LAN.
 - The secret matches Settings; the page never echoes the full value.
 - SOCKS user/pass can be changed in tunnel admin (factory defaults are for localhost / lab LAN only).
@@ -218,7 +229,7 @@ Builds one report from that agent’s notes, command history, output, and system
 
 #### Upgrade
 
-Replace the binary on a live Linux agent. Identity (agent id / channel id) is kept.
+Replace the binary on a live Linux agent. **Identity (agent id / channel id) is kept.**
 
 1. Build a new version in the Builder and copy the download URL.
 2. Fill **New binary URL** and a temp path on the target (default `/tmp/.agent_upg`).
@@ -242,23 +253,54 @@ Cross-compiles the agent with Rust on the console host, then offers a download.
 
 **Build fields**
 
-- Channel secret: same as the console decrypt password. If you set it at deploy time, leave the builder field empty to reuse. Changing it orphans every old agent.
+- Channel secret: same as the console decrypt password. If you set it at deploy time, leave the builder field empty to reuse. **Changing it orphans every old agent.**
 - GitHub token / repo: required for GitHub-only or dual backup. This token **is compiled into the agent**. Grant Issues read/write only — see Credentials and permissions.
 - Worker URL, secret, path: required for Worker / dual. An empty path makes the relay return 404.
 - Failover threshold / primary probe interval: dual only. Defaults: 3 rounds to fail over, 5 rounds before probing primary.
-- Poll interval: default 30s; speeds up when busy, slows down when idle.
-- Time window: `09:00-18:00` or `9,10,11,14`; empty = all day. Edges jitter by about 20 minutes. Outside the window the agent does not talk; the panel shows quiet, not offline.
+- **Poll interval (fully automatic):** you only set the base, default `30` seconds. The agent **detects operator activity by itself** — you do not tune fast/slow by hand:
+  - **Hot** (a command in the last 2 minutes) → faster, 15 seconds at most
+  - **Warm** (a command in the last hour) → your base interval
+  - **Cold** (no command for over an hour) → base × 4, 5 minutes at most
+- **Time window (emphasized):** evaluated in **Beijing time**. The clock is calibrated from the network, not only the target’s system clock. Two spellings:
+  - Range: `09:00-18:00` (overnight works, e.g. `22:00-06:00`)
+  - Hour list: `9,10,11,14`
+  - **Empty = online all day**
+  - Each agent, each day, jitters its edges: about ±20 minutes daily plus about ±5 minutes of noise, so the fleet does not wake or vanish on the same second.
+  - **No C2 traffic outside the window**; it sleeps 5–20 minutes at random. The sidebar shows **Quiet**, not offline.
+  - **Kill is still checked after hours**, so an off-window stop still lands.
 - Arch: prefer `x86_64-unknown-linux-musl` (static, no glibc). Also aarch64 and gnu.
 - Release: custom version label; empty uses the git short hash at build time.
 - Debug: keep off in production so the target does not grow a log fingerprint.
-- Backup URL: if the GitHub token dies (401), the agent pulls a signed config from this URL and restarts. Empty = off.
-- Guards: optional hostname, user, marker file, minimum RAM; mismatch exits silently (sandbox / honeypot).
-- Process name / install path: empty = auto disguise as a distro daemon.
+- **Backup URL (remote ticket rotation, optional):** an **HTTPS** URL. When the GitHub token returns **401**, or after about 5 consecutive failures, the agent GETs this JSON, applies new credentials, and restarts. **Empty = off.** The same URL is fetched at most once per hour; if the body matches the current config it does not restart.
+
+  The URL must serve **JSON** (any `Content-Type` is fine as long as the body parses). Fields:
+
+  ```json
+  {
+    "channel": "github",
+    "github_token": "github_pat_replace_with_new_fine_grained_token",
+    "github_repo": "owner/private-repo",
+    "password": "same-channel-secret-or-the-new-secret-you-will-change-together",
+    "hmac_sig": ""
+  }
+  ```
+
+  | Field | Required | Meaning |
+  |---|---|---|
+  | `channel` | No, default `github` | `github` or `notion`. For Notion: `github_token` is the Integration Token (`ntn_`), `github_repo` is the Database ID. |
+  | `github_token` | Yes | The new check-in token. **It will also live on the target** — keep the same least privilege as in Credentials and permissions. |
+  | `github_repo` | Yes | GitHub: `owner/repo`. Notion: database ID. |
+  | `password` | Yes | Channel secret. If you change it, change the console decrypt password too or replies will not decrypt. |
+  | `hmac_sig` | Situational | The web builder **does not verify a signature** by default; leave it empty. Only if you compiled with `BACKUP_SECRET` set does the agent require HMAC-SHA256 of `channel\|github_token\|github_repo\|password`, written as lowercase hex. |
+
+  The URL must be `https://`. The JSON holds a new token — **do not put it on a guessable or search-indexed public path** (a public Gist is posting the new key on the internet). Use a host you control, object storage with a long random path, or your own Worker. The Backup URL itself is not changed by this JSON.
+- **Guards:** optional hostname, user, marker file, minimum RAM; mismatch **exits silently** (sandbox / honeypot).
+- **Process name / install path:** empty = **auto-disguise as a distro daemon**.
 - Compress: strip symbols; optional UPX (needs `upx` on the console).
 
 **Fileless modes (Linux)**
 
-- **A · memfd deploy**: one pasteable command; the agent runs in memory, no disk, no persistence, gone after reboot. Needs Python 3.8+ on the target.
+- **A · memfd deploy (fileless):** one pasteable command; the agent **runs in memory, no disk, no persistence, gone after reboot**. Needs Python 3.8+ on the target.
 - **B · raw shellcode**: paste hex / `\xNN` / base64; generates an mmap-RWX jump command.
 
 #### MCP
@@ -290,11 +332,11 @@ Saving empty tokens or passwords does not wipe stored secrets. Settings GET resp
 
 ### Channels and reliability
 
-- On dual-channel, commands follow the most recently active path; the same command is also written to the sibling channel. The agent deduplicates so a switch does not drop the order.
-- After enough Worker failures the agent moves to GitHub and posts a visible `[Channel]` notice. If the notice fails, the switch rolls back so the console and the agent do not listen on different paths.
-- After the GitHub backup is stable the agent probes Worker, re-registers, then fails back — also with a notice.
+- On dual-channel, commands follow the **most recently active path**; the same command is also written to the sibling channel. The agent deduplicates so a switch does not drop the order.
+- After enough Worker failures the agent **fails over to GitHub** and posts a visible `[Channel]` notice. If the notice fails, the switch **rolls back** so the console and the agent do not listen on different paths.
+- After the GitHub backup is stable the agent probes Worker, re-registers, then **fails back** — also with a notice.
 - If D1 is rebuilt and AUTOINCREMENT restarts, the agent and the console detect the stale watermark and reset it instead of staying deaf.
-- Kill is still checked outside the time window, so an after-hours stop still lands.
+- **Kill is still checked outside the time window**, so an after-hours stop still lands.
 
 ---
 
